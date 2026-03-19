@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openflux"
+version = "0.1.0"
+description = "Open standard for AI agent telemetry. One schema across every framework."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "Advit Arora" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Monitoring",
+]
+
+[project.optional-dependencies]
+openai = ["openai-agents>=0.1"]
+langchain = ["langchain-core>=0.1"]
+claude-agent-sdk = ["claude-agent-sdk>=0.1"]
+autogen = ["autogen-agentchat>=0.4.2"]
+crewai = ["crewai>=0.80"]
+google-adk = ["google-adk>=0.1"]
+mcp = ["mcp>=1.0"]
+bedrock = ["boto3>=1.28"]
+all = [
+    "openflux[openai]",
+    "openflux[langchain]",
+    "openflux[claude-agent-sdk]",
+    "openflux[autogen]",
+    "openflux[crewai]",
+    "openflux[google-adk]",
+    "openflux[mcp]",
+    "openflux[bedrock]",
+]
+
+[project.scripts]
+openflux = "openflux.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/advitrocks9/openflux"
+Documentation = "https://github.com/advitrocks9/openflux/docs"
+Repository = "https://github.com/advitrocks9/openflux"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openflux"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that hit I/O (SQLite, network, filesystem)",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]
+# Adapters use Any for framework interop with optional deps
+"src/openflux/adapters/**" = ["ANN401"]
+# CLI, schema, normalizer, sinks use dict[str, Any] for JSON data
+"src/openflux/schema.py" = ["ANN401"]
+"src/openflux/normalizer.py" = ["ANN401"]
+"src/openflux/cli.py" = ["ANN401"]
+"src/openflux/sinks/**" = ["ANN401"]
+"src/openflux/collector.py" = ["ANN401"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+# try/except ImportError pattern requires reassigning _HAS_X in except branch
+reportConstantRedefinition = false
+# Month 2/3 adapter stubs import uninstalled optional deps
+exclude = [
+    "src/openflux/adapters/autogen.py",
+    "src/openflux/adapters/crewai.py",
+    "src/openflux/adapters/google_adk.py",
+    "src/openflux/adapters/mcp.py",
+    "src/openflux/adapters/bedrock.py",
+    "src/openflux/adapters/claude_agent_sdk.py",
+]
