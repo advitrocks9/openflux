@@ -15,7 +15,7 @@ def handler() -> Any:
 
     traces: list[Any] = []
     h = OpenFluxCallbackHandler(agent="test-lc-agent", on_trace=traces.append)
-    h._test_traces = traces  # type: ignore[attr-defined]
+    h._test_traces = traces
     return h
 
 

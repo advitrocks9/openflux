@@ -25,11 +25,11 @@ from openflux.schema import (
 _HAS_SDK = importlib.util.find_spec("claude_agent_sdk") is not None
 
 if _HAS_SDK:
-    from claude_agent_sdk import HookMatcher  # type: ignore[import-untyped]
+    from claude_agent_sdk import HookMatcher
 else:
 
     @dataclass
-    class HookMatcher:  # type: ignore[no-redef]
+    class HookMatcher:
         matcher: str | None = None
         hooks: list[Any] = field(default_factory=list)
         timeout: float | None = None

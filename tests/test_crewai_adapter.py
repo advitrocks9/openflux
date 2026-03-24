@@ -22,7 +22,7 @@ def listener() -> Any:
 
     traces: list[Any] = []
     lis = OpenFluxCrewListener(agent="test-crew", on_trace=traces.append)
-    lis._test_traces = traces  # type: ignore[attr-defined]
+    lis._test_traces = traces
     return lis
 
 
@@ -43,7 +43,7 @@ def bus() -> Any:
                 handler(source, event)
 
     bus = MockBus()
-    bus._handlers = handlers  # type: ignore[attr-defined]
+    bus._handlers = handlers
     return bus
 
 

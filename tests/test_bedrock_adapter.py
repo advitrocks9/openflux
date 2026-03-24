@@ -24,7 +24,7 @@ from openflux.schema import ContextType, SourceType, Status
 def adapter() -> BedrockAdapter:
     traces: list[Any] = []
     a = BedrockAdapter(agent="test-bedrock", on_trace=traces.append)
-    a._test_traces = traces  # type: ignore[attr-defined]
+    a._test_traces = traces
     return a
 
 

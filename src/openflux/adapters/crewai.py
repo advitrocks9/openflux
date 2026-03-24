@@ -29,22 +29,21 @@ _HAS_CREWAI = importlib.util.find_spec("crewai") is not None
 
 if _HAS_CREWAI:
     from crewai.events import (
-  # type: ignore[import-untyped]
         AgentExecutionCompletedEvent,
-  AgentExecutionStartedEvent,
-  BaseEventListener,
-  CrewKickoffCompletedEvent,
-  CrewKickoffStartedEvent,
-  LLMCallCompletedEvent,
-  LLMCallStartedEvent,
-  TaskCompletedEvent,
-  TaskStartedEvent,
-  ToolUsageErrorEvent,
-  ToolUsageFinishedEvent,
-  ToolUsageStartedEvent,
+        AgentExecutionStartedEvent,
+        BaseEventListener,
+        CrewKickoffCompletedEvent,
+        CrewKickoffStartedEvent,
+        LLMCallCompletedEvent,
+        LLMCallStartedEvent,
+        TaskCompletedEvent,
+        TaskStartedEvent,
+        ToolUsageErrorEvent,
+        ToolUsageFinishedEvent,
+        ToolUsageStartedEvent,
 )
 else:
-    BaseEventListener = object  # type: ignore[assignment,misc]
+    BaseEventListener = object
 
 
 @dataclass(slots=True)
@@ -67,7 +66,7 @@ class _TaskAccumulator:
     _pending_tool_start_ns: int = 0
 
 
-class OpenFluxCrewListener(BaseEventListener):  # type: ignore[misc]
+class OpenFluxCrewListener(BaseEventListener):
     """One Trace per task. Parallel tasks get independent accumulators."""
 
     def __init__(
@@ -86,7 +85,7 @@ class OpenFluxCrewListener(BaseEventListener):  # type: ignore[misc]
         self._agent_task: dict[str, str] = {}
         self._completed: list[Trace] = []
 
-    def setup_listeners(self, crewai_event_bus: Any) -> None:  # type: ignore[override]
+    def setup_listeners(self, crewai_event_bus: Any) -> None:
         @crewai_event_bus.on(CrewKickoffStartedEvent)
         def _on_crew_started(source: Any, event: Any) -> None:
             self._crew_name = getattr(event, "crew_name", "")

@@ -23,11 +23,10 @@ _HAS_LANGCHAIN = importlib.util.find_spec("langchain_core") is not None
 
 if _HAS_LANGCHAIN:
     from langchain_core.callbacks import (
-        # type: ignore[import-untyped],
         BaseCallbackHandler,
 )
 else:
-    BaseCallbackHandler = object  # type: ignore[assignment,misc]
+    BaseCallbackHandler = object
 
 
 @dataclass(slots=True)
@@ -52,7 +51,7 @@ class _RunAccumulator:
     pending_tool_timestamp: str = ""
 
 
-class OpenFluxCallbackHandler(BaseCallbackHandler):  # type: ignore[misc]
+class OpenFluxCallbackHandler(BaseCallbackHandler):
     """LangChain callback handler that accumulates events into Traces."""
 
     def __init__(
@@ -60,7 +59,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):  # type: ignore[misc]
         agent: str = "langchain-agent",
         on_trace: Any | None = None,
     ) -> None:
-        super().__init__()  # type: ignore[reportUnknownMemberType]
+        super().__init__()
         self._agent = agent
         self._on_trace = on_trace
         self._lock = threading.Lock()

@@ -20,9 +20,9 @@ from openflux.schema import (
 _HAS_AGENTS = importlib.util.find_spec("agents") is not None
 
 if _HAS_AGENTS:
-    from agents.tracing import TracingProcessor  # type: ignore[import-untyped]
+    from agents.tracing import TracingProcessor
 else:
-    TracingProcessor = object  # type: ignore[assignment,misc]
+    TracingProcessor = object
 
 
 _DEFAULT_SEARCH_TOOLS: set[str] = {"web_search", "search", "retrieve"}
@@ -42,7 +42,7 @@ class _TraceAccumulator:
     has_error: bool = False
 
 
-class OpenFluxProcessor(TracingProcessor):  # type: ignore[misc]
+class OpenFluxProcessor(TracingProcessor):
     """TracingProcessor that accumulates spans into Traces."""
 
     def __init__(

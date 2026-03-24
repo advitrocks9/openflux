@@ -72,7 +72,7 @@ def processor() -> Any:
 
     traces: list[Any] = []
     proc = OpenFluxProcessor(agent="test-agent", on_trace=traces.append)
-    proc._test_traces = traces  # type: ignore[attr-defined]
+    proc._test_traces = traces
     return proc
 
 

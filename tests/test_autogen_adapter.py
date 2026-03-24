@@ -123,7 +123,7 @@ def consumer() -> Any:
 
     traces: list[Any] = []
     c = AutoGenStreamConsumer(agent="test-team", on_trace=traces.append)
-    c._test_traces = traces  # type: ignore[attr-defined]
+    c._test_traces = traces
     return c
 
 

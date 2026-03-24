@@ -349,7 +349,7 @@ class BedrockCloudWatchIngester:
         if boto3_session is not None:
             self._logs_client = boto3_session.client("logs", region_name=region)
         elif _HAS_BOTO3:
-            import boto3  # type: ignore[import-untyped]
+            import boto3
 
             session = boto3.Session(region_name=region)
             self._logs_client = session.client("logs")
