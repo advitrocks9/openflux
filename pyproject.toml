@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Open standard for AI agent telemetry. One schema across every framework."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Advit Arora" }]
 classifiers = [
@@ -60,7 +61,9 @@ markers = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "pytest>=8",
+    "ruff>=0.9",
+    "pyright>=1.1",
 ]
 
 [tool.ruff]
@@ -68,30 +71,21 @@ target-version = "py312"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "N", "ANN"]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "N", "ANN", "C4", "PTH"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
-# Adapters use Any for framework interop with optional deps
 "src/openflux/adapters/**" = ["ANN401"]
-# CLI, schema, normalizer, sinks use dict[str, Any] for JSON data
-"src/openflux/schema.py" = ["ANN401"]
-"src/openflux/normalizer.py" = ["ANN401"]
-"src/openflux/cli.py" = ["ANN401"]
-"src/openflux/sinks/**" = ["ANN401"]
-"src/openflux/collector.py" = ["ANN401"]
 
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-# try/except ImportError pattern requires reassigning _HAS_X in except branch
-reportConstantRedefinition = false
-# Month 2/3 adapter stubs import uninstalled optional deps
 exclude = [
     "src/openflux/adapters/autogen.py",
-    "src/openflux/adapters/crewai.py",
-    "src/openflux/adapters/google_adk.py",
-    "src/openflux/adapters/mcp.py",
     "src/openflux/adapters/bedrock.py",
     "src/openflux/adapters/claude_agent_sdk.py",
+    "src/openflux/adapters/crewai.py",
+    "src/openflux/adapters/google_adk.py",
+    "src/openflux/adapters/langchain.py",
+    "src/openflux/adapters/mcp.py",
 ]
