@@ -371,11 +371,14 @@ class TestCmdInstall:
         assert settings_path.exists()
         settings = json.loads(settings_path.read_text())
         hooks = settings["hooks"]
-        for event_name in CLAUDE_CODE_HOOKS:
-            assert event_name in hooks
-            assert any(
-                h["command"] == CLAUDE_CODE_HOOKS[event_name] for h in hooks[event_name]
-            )
+        for event, cmd in CLAUDE_CODE_HOOKS.items():
+            assert event in hooks
+            cmds = [
+                h["command"]
+                for g in hooks[event]
+                for h in g.get("hooks", [])
+            ]
+            assert cmd in cmds
         out = capsys.readouterr().out
         assert "Added hooks" in out
 
@@ -403,13 +406,10 @@ class TestCmdInstall:
     ) -> None:
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.parent.mkdir(parents=True)
-        existing = {
-            "hooks": {
-                "SessionStart": [
-                    {"type": "command", "command": CLAUDE_CODE_HOOKS["SessionStart"]}
-                ]
-            }
-        }
+        existing = {"hooks": {"SessionStart": [{
+            "matcher": "",
+            "hooks": [{"type": "command", "command": CLAUDE_CODE_HOOKS["SessionStart"]}],
+        }]}}
         settings_path.write_text(json.dumps(existing))
         with patch("openflux.cli.Path.home", return_value=tmp_path):
             _run_cli(["install", "claude-code"], monkeypatch)
@@ -417,12 +417,12 @@ class TestCmdInstall:
         assert "Already configured" in out
         settings = json.loads(settings_path.read_text())
         session_hooks = settings["hooks"]["SessionStart"]
-        matching = [
-            h
-            for h in session_hooks
-            if h["command"] == CLAUDE_CODE_HOOKS["SessionStart"]
+        cmds = [
+            h["command"]
+            for g in session_hooks
+            for h in g.get("hooks", [])
         ]
-        assert len(matching) == 1
+        assert cmds.count(CLAUDE_CODE_HOOKS["SessionStart"]) == 1
 
     def test_list_adapters(
         self,

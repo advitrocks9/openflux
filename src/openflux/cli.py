@@ -312,9 +312,12 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 
 def _hook_exists(event_hooks: list[Any], command: str) -> bool:
-    for h in event_hooks:
-        if isinstance(h, dict) and cast(dict[str, Any], h).get("command") == command:
-            return True
+    for group in event_hooks:
+        if not isinstance(group, dict):
+            continue
+        for h in cast(list[Any], group.get("hooks", [])):
+            if isinstance(h, dict) and h.get("command") == command:
+                return True
     return False
 
 
@@ -325,22 +328,23 @@ def _install_claude_code() -> None:
         settings: dict[str, Any] = json.loads(settings_path.read_text())
     else:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-        settings: dict[str, Any] = {}
+        settings = {}
 
     hooks: dict[str, Any] = settings.setdefault("hooks", {})
     added: list[str] = []
     skipped: list[str] = []
 
     for event_name, command in CLAUDE_CODE_HOOKS.items():
-        hook_entry: dict[str, str] = {"type": "command", "command": command}
         event_hooks: list[Any] = hooks.setdefault(event_name, [])
 
-        already = _hook_exists(event_hooks, command)
-        if already:
+        if _hook_exists(event_hooks, command):
             skipped.append(event_name)
             continue
 
-        event_hooks.append(hook_entry)
+        event_hooks.append({
+            "matcher": "",
+            "hooks": [{"type": "command", "command": command}],
+        })
         added.append(event_name)
 
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
