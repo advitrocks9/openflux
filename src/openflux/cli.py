@@ -12,14 +12,17 @@ from openflux.sinks.sqlite import SQLiteSink
 
 DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
-_CC = "python3 -m openflux.adapters.claude_code"
+def _hook_cmd(subcommand: str) -> str:
+    return f"{sys.executable} -m openflux.adapters.claude_code {subcommand}"
+
+
 CLAUDE_CODE_HOOKS: dict[str, str] = {
-    "SessionStart": f"{_CC} session_start",
-    "PostToolUse": f"{_CC} post_tool_use",
-    "PostToolUseFailure": f"{_CC} post_tool_use_failure",
-    "SubagentStart": f"{_CC} subagent_start",
-    "Stop": f"{_CC} session_end",
-    "SessionEnd": f"{_CC} session_end",
+    "SessionStart": _hook_cmd("session_start"),
+    "PostToolUse": _hook_cmd("post_tool_use"),
+    "PostToolUseFailure": _hook_cmd("post_tool_use_failure"),
+    "SubagentStart": _hook_cmd("subagent_start"),
+    "Stop": _hook_cmd("session_end"),
+    "SessionEnd": _hook_cmd("session_end"),
 }
 
 AVAILABLE_ADAPTERS: dict[str, str] = {
