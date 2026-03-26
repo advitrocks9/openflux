@@ -5,15 +5,19 @@ from typing import Any
 
 import pytest
 
-from openflux.schema import Status
+from openflux.schema import ContextType, Status
 
 
 def _mock_task(task_id: str = "task-1", description: str = "Analyze data") -> Any:
     return SimpleNamespace(id=task_id, description=description)
 
 
-def _mock_agent(role: str = "Researcher") -> Any:
-    return SimpleNamespace(role=role)
+def _mock_agent(
+    role: str = "Researcher",
+    backstory: str = "",
+    goal: str = "",
+) -> Any:
+    return SimpleNamespace(role=role, backstory=backstory, goal=goal)
 
 
 @pytest.fixture()
@@ -94,7 +98,7 @@ class LLMCallCompletedEvent:
         self,
         usage: dict[str, int] | None = None,
         model: str = "",
-        response: str = "",
+        response: Any = "",
     ) -> None:
         self.usage = usage
         self.model = model
@@ -117,6 +121,17 @@ class ToolUsageErrorEvent:
         self.error = error
 
 
+class KnowledgeRetrievalCompletedEvent:
+    def __init__(self, query: str = "", retrieved_knowledge: str = "") -> None:
+        self.query = query
+        self.retrieved_knowledge = retrieved_knowledge
+
+
+class MemoryRetrievalCompletedEvent:
+    def __init__(self, memory_content: str = "") -> None:
+        self.memory_content = memory_content
+
+
 @pytest.fixture()
 def setup(listener: Any, bus: Any) -> tuple[Any, Any]:
     import openflux.adapters.crewai as mod
@@ -134,6 +149,8 @@ def setup(listener: Any, bus: Any) -> tuple[Any, Any]:
         "ToolUsageStartedEvent": ToolUsageStartedEvent,
         "ToolUsageFinishedEvent": ToolUsageFinishedEvent,
         "ToolUsageErrorEvent": ToolUsageErrorEvent,
+        "KnowledgeRetrievalCompletedEvent": KnowledgeRetrievalCompletedEvent,
+        "MemoryRetrievalCompletedEvent": MemoryRetrievalCompletedEvent,
     }
     for name, cls in mock_types.items():
         originals[name] = getattr(mod, name, None)
@@ -228,6 +245,32 @@ class TestAgentEvents:
         bus.emit(None, TaskCompletedEvent(task=task, output=""))
         assert listener._test_traces[0].decision == "The report"
 
+    def test_backstory_captured_as_context(self, setup: tuple[Any, Any]) -> None:
+        listener, bus = setup
+        task = _mock_task()
+        agent = _mock_agent(
+            "Analyst", backstory="You are a senior data analyst.", goal="Analyze data"
+        )
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(None, AgentExecutionStartedEvent(agent=agent))
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        trace = listener._test_traces[0]
+        assert len(trace.context) == 1
+        ctx = trace.context[0]
+        assert ctx.type == ContextType.SYSTEM_PROMPT
+        assert ctx.source == "agent:Analyst"
+        assert "senior data analyst" in ctx.content
+
+    def test_goal_captured_in_metadata(self, setup: tuple[Any, Any]) -> None:
+        listener, bus = setup
+        task = _mock_task()
+        agent = _mock_agent("Analyst", goal="Find patterns in sales data")
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(None, AgentExecutionStartedEvent(agent=agent))
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        trace = listener._test_traces[0]
+        assert trace.metadata["agent_goal"] == "Find patterns in sales data"
+
 
 class TestToolEvents:
     def test_tool_record_created(self, setup: tuple[Any, Any]) -> None:
@@ -305,6 +348,27 @@ class TestLLMEvents:
         assert trace.token_usage.output_tokens == 200
         assert trace.model == "gpt-4o"
 
+    def test_token_usage_from_response_dict(self, setup: tuple[Any, Any]) -> None:
+        """Token usage extracted from response dict (real CrewAI behavior)."""
+        listener, bus = setup
+        task = _mock_task()
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(None, LLMCallStartedEvent())
+        # Simulate real CrewAI: no top-level usage, but response is a dict
+        evt = LLMCallCompletedEvent.__new__(LLMCallCompletedEvent)
+        evt.usage = None
+        evt.model = "gpt-4o-mini"
+        evt.response = {
+            "choices": [{"message": {"content": "Hello"}}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 45},
+        }
+        bus.emit(None, evt)
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        trace = listener._test_traces[0]
+        assert trace.token_usage is not None
+        assert trace.token_usage.input_tokens == 120
+        assert trace.token_usage.output_tokens == 45
+
     def test_token_usage_accumulates(self, setup: tuple[Any, Any]) -> None:
         listener, bus = setup
         task = _mock_task()
@@ -350,6 +414,67 @@ class TestLLMEvents:
         assert trace.token_usage is not None
         assert trace.token_usage.input_tokens == 300
         assert trace.token_usage.output_tokens == 100
+
+
+class TestTags:
+    def test_crewai_base_tag(self, setup: tuple[Any, Any]) -> None:
+        listener, bus = setup
+        task = _mock_task()
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        assert "crewai" in listener._test_traces[0].tags
+
+    def test_crew_name_in_tags(self, setup: tuple[Any, Any]) -> None:
+        listener, bus = setup
+        bus.emit(None, CrewKickoffStartedEvent(crew_name="analytics-crew"))
+        task = _mock_task()
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        assert "analytics-crew" in listener._test_traces[0].tags
+
+    def test_agent_role_in_tags(self, setup: tuple[Any, Any]) -> None:
+        listener, bus = setup
+        task = _mock_task()
+        agent = _mock_agent("Researcher")
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(None, AgentExecutionStartedEvent(agent=agent))
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        assert "Researcher" in listener._test_traces[0].tags
+
+
+class TestKnowledgeAndMemory:
+    def test_knowledge_retrieval_creates_search(self, setup: tuple[Any, Any]) -> None:
+        listener, bus = setup
+        task = _mock_task()
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(
+            None,
+            KnowledgeRetrievalCompletedEvent(
+                query="sales Q4", retrieved_knowledge="Revenue up 20%"
+            ),
+        )
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        trace = listener._test_traces[0]
+        assert len(trace.searches) == 1
+        assert trace.searches[0].query == "sales Q4"
+        assert trace.searches[0].engine == "crewai-knowledge"
+        assert trace.searches[0].results_count == 1
+
+    def test_memory_retrieval_creates_context(self, setup: tuple[Any, Any]) -> None:
+        listener, bus = setup
+        task = _mock_task()
+        bus.emit(None, TaskStartedEvent(task=task))
+        bus.emit(
+            None,
+            MemoryRetrievalCompletedEvent(memory_content="Previous analysis found X"),
+        )
+        bus.emit(None, TaskCompletedEvent(task=task, output="done"))
+        trace = listener._test_traces[0]
+        # context may also have backstory entries; filter to memory type
+        mem_contexts = [c for c in trace.context if c.type == ContextType.MEMORY]
+        assert len(mem_contexts) == 1
+        assert mem_contexts[0].source == "crewai-memory"
+        assert "Previous analysis" in mem_contexts[0].content
 
 
 class TestMetadata:
