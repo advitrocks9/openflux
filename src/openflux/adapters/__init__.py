@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from openflux.adapters._claude_code import ClaudeCodeAdapter
     from openflux.adapters.autogen import AutoGenStreamConsumer
     from openflux.adapters.bedrock import BedrockAdapter
     from openflux.adapters.claude_agent_sdk import ClaudeAgentSDKAdapter
-    from openflux.adapters.claude_code import ClaudeCodeAdapter
     from openflux.adapters.google_adk import ADKCallbacks
     from openflux.adapters.langchain import OpenFluxCallbackHandler
     from openflux.adapters.mcp import MCPServerAdapter
@@ -37,7 +37,7 @@ def get_claude_agent_sdk_adapter(
 
 def get_claude_code_adapter() -> ClaudeCodeAdapter:
     """Lazy import for the Claude Code subprocess adapter."""
-    from openflux.adapters.claude_code import ClaudeCodeAdapter
+    from openflux.adapters._claude_code import ClaudeCodeAdapter
 
     return ClaudeCodeAdapter()
 
