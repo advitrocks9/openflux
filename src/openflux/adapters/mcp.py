@@ -7,7 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from openflux._util import generate_session_id, generate_trace_id, utc_now
-from openflux.schema import Status, Trace
+from openflux.schema import (
+    ContextRecord,
+    SearchRecord,
+    SourceRecord,
+    Status,
+    TokenUsage,
+    ToolRecord,
+    Trace,
+)
 
 try:
     import mcp.server.fastmcp  # noqa: F401
@@ -18,6 +26,30 @@ except ImportError:
 
 _DEFAULT_RECENT_LIMIT = 10
 _DEFAULT_SEARCH_LIMIT = 10
+
+
+def _parse_records[T](items: list[dict[str, Any]] | None, cls: type[T]) -> list[T]:
+    """Convert list of dicts into typed dataclass instances."""
+    if not items:
+        return []
+    return [cls(**item) for item in items]
+
+
+def _build_token_usage(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+) -> TokenUsage | None:
+    """Build TokenUsage if any value is non-zero."""
+    if input_tokens or output_tokens or cache_read_tokens or cache_creation_tokens:
+        return TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
+    return None
 
 
 def _get_sink(db_path: Path | str | None = None) -> Any:
@@ -103,6 +135,15 @@ class MCPServerAdapter:
             duration_ms: int = 0,
             metadata: dict[str, Any] | None = None,
             session_id: str = "",
+            input_tokens: int = 0,
+            output_tokens: int = 0,
+            cache_read_tokens: int = 0,
+            cache_creation_tokens: int = 0,
+            tools_used: list[dict[str, Any]] | None = None,
+            context: list[dict[str, Any]] | None = None,
+            searches: list[dict[str, Any]] | None = None,
+            sources_read: list[dict[str, Any]] | None = None,
+            turn_count: int = 0,
         ) -> str:
             """Record what the agent just did. Creates and stores a Trace.
 
@@ -119,6 +160,19 @@ class MCPServerAdapter:
                 duration_ms: How long the action took.
                 metadata: Arbitrary key-value pairs.
                 session_id: Session to associate with (auto-generated if empty).
+                input_tokens: LLM input tokens consumed.
+                output_tokens: LLM output tokens generated.
+                cache_read_tokens: Tokens read from prompt cache.
+                cache_creation_tokens: Tokens written to prompt cache.
+                tools_used: Tool calls as dicts (keys: name,
+                    tool_input, tool_output, duration_ms, error).
+                context: Context records as dicts (keys: type,
+                    source, content_hash, content, bytes).
+                searches: Search records as dicts (keys: query,
+                    engine, results_count).
+                sources_read: Source records as dicts (keys: type,
+                    path, content_hash, content, tool, bytes_read).
+                turn_count: Number of conversation turns in this trace.
             """
             trace = Trace(
                 id=generate_trace_id(),
@@ -137,6 +191,17 @@ class MCPServerAdapter:
                 correction=correction or None,
                 duration_ms=duration_ms,
                 metadata=metadata or {},
+                token_usage=_build_token_usage(
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                ),
+                tools_used=_parse_records(tools_used, ToolRecord),
+                context=_parse_records(context, ContextRecord),
+                searches=_parse_records(searches, SearchRecord),
+                sources_read=_parse_records(sources_read, SourceRecord),
+                turn_count=turn_count,
             )
 
             sink = _get_sink(self._db_path)
@@ -146,6 +211,89 @@ class MCPServerAdapter:
                 sink.close()
 
             return json.dumps({"recorded": trace.id, "timestamp": trace.timestamp})
+
+        @self._server.tool()
+        def trace_update(
+            trace_id: str,
+            tools_used: list[dict[str, Any]] | None = None,
+            context: list[dict[str, Any]] | None = None,
+            searches: list[dict[str, Any]] | None = None,
+            sources_read: list[dict[str, Any]] | None = None,
+            turn_count: int | None = None,
+            input_tokens: int = 0,
+            output_tokens: int = 0,
+            cache_read_tokens: int = 0,
+            cache_creation_tokens: int = 0,
+            status: str = "",
+            decision: str = "",
+            duration_ms: int | None = None,
+        ) -> str:
+            """Append records to an existing trace (for multi-turn sessions).
+
+            Args:
+                trace_id: ID of the trace to update.
+                tools_used: Additional tool calls to append.
+                context: Additional context records to append.
+                searches: Additional search records to append.
+                sources_read: Additional source records to append.
+                turn_count: Updated turn count (replaces existing).
+                input_tokens: Additional input tokens to add.
+                output_tokens: Additional output tokens to add.
+                cache_read_tokens: Additional cache read tokens to add.
+                cache_creation_tokens: Additional cache creation tokens to add.
+                status: Updated status (if non-empty, replaces existing).
+                decision: Updated decision (if non-empty, replaces existing).
+                duration_ms: Updated duration (if provided, replaces existing).
+            """
+            sink = _get_sink(self._db_path)
+            try:
+                trace = sink.get(trace_id)
+                if trace is None:
+                    return json.dumps({"error": f"trace {trace_id} not found"})
+
+                # Append nested records
+                trace.tools_used.extend(_parse_records(tools_used, ToolRecord))
+                trace.context.extend(_parse_records(context, ContextRecord))
+                trace.searches.extend(_parse_records(searches, SearchRecord))
+                trace.sources_read.extend(_parse_records(sources_read, SourceRecord))
+
+                # Merge token usage (additive)
+                new_usage = _build_token_usage(
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                )
+                if new_usage:
+                    if trace.token_usage:
+                        trace.token_usage.input_tokens += new_usage.input_tokens
+                        trace.token_usage.output_tokens += new_usage.output_tokens
+                        trace.token_usage.cache_read_tokens += (
+                            new_usage.cache_read_tokens
+                        )
+                        trace.token_usage.cache_creation_tokens += (
+                            new_usage.cache_creation_tokens
+                        )
+                    else:
+                        trace.token_usage = new_usage
+
+                # Replace scalar fields if provided
+                if turn_count is not None:
+                    trace.turn_count = turn_count
+                if status and status in {s.value for s in Status}:
+                    trace.status = status
+                if decision:
+                    trace.decision = decision
+                if duration_ms is not None:
+                    trace.duration_ms = duration_ms
+
+                # Delete then re-insert (sink uses INSERT, not upsert)
+                sink.forget(trace_id)
+                sink.write(trace)
+            finally:
+                sink.close()
+
+            return json.dumps({"updated": trace_id})
 
         @self._server.tool()
         def trace_search(

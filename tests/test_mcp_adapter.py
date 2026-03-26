@@ -155,6 +155,262 @@ class TestTraceRecord:
         assert trace is not None
         assert trace.status == "completed"
 
+    def test_record_token_usage(self, adapter: Any, db_path: Path) -> None:
+        fn = _registered_tools["trace_record"]
+        result = json.loads(
+            fn(
+                task="summarize docs",
+                input_tokens=1500,
+                output_tokens=800,
+                cache_read_tokens=200,
+                cache_creation_tokens=100,
+            )
+        )
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(result["recorded"])
+        sink.close()
+
+        assert trace is not None
+        assert trace.token_usage is not None
+        assert trace.token_usage.input_tokens == 1500
+        assert trace.token_usage.output_tokens == 800
+        assert trace.token_usage.cache_read_tokens == 200
+        assert trace.token_usage.cache_creation_tokens == 100
+
+    def test_record_no_token_usage_when_zero(self, adapter: Any, db_path: Path) -> None:
+        fn = _registered_tools["trace_record"]
+        result = json.loads(fn(task="no tokens"))
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(result["recorded"])
+        sink.close()
+
+        assert trace is not None
+        # SQLite sink stores zeros and reconstructs TokenUsage on read,
+        # so we verify the values are all zero
+        if trace.token_usage is not None:
+            assert trace.token_usage.input_tokens == 0
+            assert trace.token_usage.output_tokens == 0
+
+    def test_record_tools_used(self, adapter: Any, db_path: Path) -> None:
+        fn = _registered_tools["trace_record"]
+        result = json.loads(
+            fn(
+                task="debug issue",
+                tools_used=[
+                    {"name": "bash", "tool_input": "ls", "duration_ms": 50},
+                    {"name": "read", "tool_input": "src/main.py"},
+                ],
+            )
+        )
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(result["recorded"])
+        sink.close()
+
+        assert trace is not None
+        assert len(trace.tools_used) == 2
+        assert trace.tools_used[0].name == "bash"
+        assert trace.tools_used[0].duration_ms == 50
+        assert trace.tools_used[1].name == "read"
+
+    def test_record_context(self, adapter: Any, db_path: Path) -> None:
+        fn = _registered_tools["trace_record"]
+        result = json.loads(
+            fn(
+                task="answer question",
+                context=[
+                    {"type": "system_prompt", "source": "CLAUDE.md", "bytes": 2048}
+                ],
+            )
+        )
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(result["recorded"])
+        sink.close()
+
+        assert trace is not None
+        assert len(trace.context) == 1
+        assert trace.context[0].type == "system_prompt"
+        assert trace.context[0].source == "CLAUDE.md"
+
+    def test_record_searches(self, adapter: Any, db_path: Path) -> None:
+        fn = _registered_tools["trace_record"]
+        result = json.loads(
+            fn(
+                task="research topic",
+                searches=[
+                    {"query": "python async", "engine": "google", "results_count": 10}
+                ],
+            )
+        )
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(result["recorded"])
+        sink.close()
+
+        assert trace is not None
+        assert len(trace.searches) == 1
+        assert trace.searches[0].query == "python async"
+
+    def test_record_sources_read(self, adapter: Any, db_path: Path) -> None:
+        fn = _registered_tools["trace_record"]
+        result = json.loads(
+            fn(
+                task="review code",
+                sources_read=[
+                    {"type": "file", "path": "src/main.py", "bytes_read": 4096}
+                ],
+            )
+        )
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(result["recorded"])
+        sink.close()
+
+        assert trace is not None
+        assert len(trace.sources_read) == 1
+        assert trace.sources_read[0].path == "src/main.py"
+
+    def test_record_turn_count(self, adapter: Any, db_path: Path) -> None:
+        fn = _registered_tools["trace_record"]
+        result = json.loads(fn(task="multi-turn chat", turn_count=5))
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(result["recorded"])
+        sink.close()
+
+        assert trace is not None
+        assert trace.turn_count == 5
+
+
+class TestTraceUpdate:
+    def test_update_appends_tools(self, adapter: Any, db_path: Path) -> None:
+        record_fn = _registered_tools["trace_record"]
+        result = json.loads(
+            record_fn(
+                task="multi-step",
+                tools_used=[{"name": "bash", "tool_input": "ls"}],
+            )
+        )
+        trace_id = result["recorded"]
+
+        update_fn = _registered_tools["trace_update"]
+        update_result = json.loads(
+            update_fn(
+                trace_id=trace_id,
+                tools_used=[{"name": "read", "tool_input": "file.py"}],
+            )
+        )
+        assert update_result["updated"] == trace_id
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(trace_id)
+        sink.close()
+
+        assert trace is not None
+        assert len(trace.tools_used) == 2
+        assert trace.tools_used[0].name == "bash"
+        assert trace.tools_used[1].name == "read"
+
+    def test_update_merges_token_usage(self, adapter: Any, db_path: Path) -> None:
+        record_fn = _registered_tools["trace_record"]
+        result = json.loads(record_fn(task="chat", input_tokens=100, output_tokens=50))
+        trace_id = result["recorded"]
+
+        update_fn = _registered_tools["trace_update"]
+        update_fn(trace_id=trace_id, input_tokens=200, output_tokens=150)
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(trace_id)
+        sink.close()
+
+        assert trace is not None
+        assert trace.token_usage is not None
+        assert trace.token_usage.input_tokens == 300
+        assert trace.token_usage.output_tokens == 200
+
+    def test_update_adds_token_usage_when_none(
+        self, adapter: Any, db_path: Path
+    ) -> None:
+        record_fn = _registered_tools["trace_record"]
+        result = json.loads(record_fn(task="no tokens initially"))
+        trace_id = result["recorded"]
+
+        update_fn = _registered_tools["trace_update"]
+        update_fn(trace_id=trace_id, input_tokens=500, output_tokens=250)
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(trace_id)
+        sink.close()
+
+        assert trace is not None
+        assert trace.token_usage is not None
+        assert trace.token_usage.input_tokens == 500
+
+    def test_update_replaces_turn_count(self, adapter: Any, db_path: Path) -> None:
+        record_fn = _registered_tools["trace_record"]
+        result = json.loads(record_fn(task="session", turn_count=1))
+        trace_id = result["recorded"]
+
+        update_fn = _registered_tools["trace_update"]
+        update_fn(trace_id=trace_id, turn_count=3)
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(trace_id)
+        sink.close()
+
+        assert trace is not None
+        assert trace.turn_count == 3
+
+    def test_update_replaces_status_and_decision(
+        self, adapter: Any, db_path: Path
+    ) -> None:
+        record_fn = _registered_tools["trace_record"]
+        result = json.loads(record_fn(task="in progress work"))
+        trace_id = result["recorded"]
+
+        update_fn = _registered_tools["trace_update"]
+        update_fn(trace_id=trace_id, status="error", decision="failed due to timeout")
+
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink(path=db_path)
+        trace = sink.get(trace_id)
+        sink.close()
+
+        assert trace is not None
+        assert trace.status == "error"
+        assert trace.decision == "failed due to timeout"
+
+    def test_update_not_found(self, adapter: Any) -> None:
+        update_fn = _registered_tools["trace_update"]
+        result = json.loads(update_fn(trace_id="trc-nonexistent"))
+        assert "error" in result
+
 
 class TestTraceSearch:
     def _seed(self, db_path: Path) -> None:
