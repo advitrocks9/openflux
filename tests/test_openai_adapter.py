@@ -4,12 +4,23 @@ from typing import Any
 
 import pytest
 
-from openflux.schema import ContextType, Status
+from openflux.schema import Status
 
 
 class FakeTrace:
-    def __init__(self, trace_id: str = "trace-001") -> None:
+    def __init__(
+        self,
+        trace_id: str = "trace-001",
+        workflow_name: str = "",
+        name: str = "",
+        group_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         self.trace_id = trace_id
+        self.workflow_name = workflow_name
+        self.name = name
+        self.group_id = group_id
+        self.metadata = metadata
 
 
 class FakeSpan:
@@ -29,17 +40,21 @@ class FakeSpan:
 
 
 class AgentSpanData:
-    def __init__(self, name: str = "my-agent", instructions: str | None = None) -> None:
+    def __init__(self, name: str = "my-agent", output_type: str | None = None) -> None:
         self.name = name
-        self.instructions = instructions
+        self.output_type = output_type
 
 
 class GenerationSpanData:
     def __init__(
-        self, model: str = "gpt-4o", usage: dict[str, int] | None = None
+        self,
+        model: str = "gpt-4o",
+        usage: dict[str, int] | None = None,
+        output: list[dict[str, Any]] | None = None,
     ) -> None:
         self.model = model
         self.usage = usage
+        self.output = output
 
 
 class FunctionSpanData:
@@ -134,15 +149,13 @@ class TestSpanHandling:
         processor.on_span_end(
             _span(
                 span_data=AgentSpanData(
-                    name="research-agent", instructions="You are a helpful assistant."
+                    name="research-agent", output_type="CalendarEvent"
                 ),
             )
         )
         processor.on_trace_end(trace)
-        trace = processor._test_traces[0]
-        assert len(trace.context) == 1
-        assert trace.context[0].type == ContextType.SYSTEM_PROMPT
-        assert "research-agent" in trace.context[0].source
+        result = processor._test_traces[0]
+        assert result.metadata.get("output_type") == "CalendarEvent"
 
     def test_generation_span(self, processor: Any) -> None:
         trace = FakeTrace(trace_id="t1")
@@ -175,7 +188,8 @@ class TestSpanHandling:
         trace = processor._test_traces[0]
         assert len(trace.tools_used) == 1
         assert trace.tools_used[0].name == "calculator"
-        assert trace.turn_count == 1
+        # turn_count tracks generation spans, not tool calls
+        assert trace.turn_count == 0
 
     def test_function_span_dict_io(self, processor: Any) -> None:
         trace = FakeTrace(trace_id="t1")
@@ -321,3 +335,189 @@ class TestFunctionSpanDuration:
         )
         processor.on_trace_end(trace)
         assert processor._test_traces[0].tools_used[0].duration_ms == 2000
+
+
+class TestTaskFromWorkflowName:
+    def test_name_maps_to_task(self, processor: Any) -> None:
+        """TraceImpl exposes workflow name as `name`, not `workflow_name`."""
+        trace = FakeTrace(trace_id="t1", name="weather-workflow")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].task == "weather-workflow"
+
+    def test_workflow_name_fallback(self, processor: Any) -> None:
+        """Falls back to workflow_name when name is empty."""
+        trace = FakeTrace(trace_id="t1", workflow_name="legacy-workflow")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].task == "legacy-workflow"
+
+    def test_name_preferred_over_workflow_name(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1", name="primary", workflow_name="fallback")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].task == "primary"
+
+    def test_empty_workflow_name(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].task == ""
+
+
+class TestDecisionFromGeneration:
+    def test_captures_last_assistant_output(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_span_end(
+            _span(
+                span_data=GenerationSpanData(
+                    model="gpt-4o",
+                    output=[{"role": "assistant", "content": "First response"}],
+                ),
+            )
+        )
+        processor.on_span_end(
+            _span(
+                span_data=GenerationSpanData(
+                    model="gpt-4o",
+                    output=[{"role": "assistant", "content": "Final decision"}],
+                ),
+            )
+        )
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].decision == "Final decision"
+
+    def test_no_output_means_empty_decision(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_span_end(_span(span_data=GenerationSpanData(model="gpt-4o")))
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].decision == ""
+
+
+class TestTraceDurationMs:
+    def test_computed_from_span_timestamps(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_span_end(
+            _span(
+                span_data=GenerationSpanData(model="gpt-4o"),
+                started_at="2026-01-01T00:00:00",
+                ended_at="2026-01-01T00:00:01",
+            )
+        )
+        processor.on_span_end(
+            _span(
+                span_data=FunctionSpanData(name="tool"),
+                started_at="2026-01-01T00:00:01",
+                ended_at="2026-01-01T00:00:03",
+            )
+        )
+        processor.on_trace_end(trace)
+        # First span starts at :00, last span ends at :03 = 3000ms
+        assert processor._test_traces[0].duration_ms == 3000
+
+    def test_zero_when_no_timestamps(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_span_end(_span(span_data=GenerationSpanData(model="gpt-4o")))
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].duration_ms == 0
+
+
+class TestTurnCount:
+    def test_counts_generation_spans(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        for _ in range(3):
+            processor.on_span_end(_span(span_data=GenerationSpanData(model="gpt-4o")))
+        # Tool calls should not increment turn_count
+        processor.on_span_end(_span(span_data=FunctionSpanData(name="calculator")))
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].turn_count == 3
+
+
+class TestScope:
+    def test_scope_from_agent_name(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1", name="my-workflow")
+        processor.on_trace_start(trace)
+        processor.on_span_end(_span(span_data=AgentSpanData(name="research-agent")))
+        processor.on_trace_end(trace)
+        # Agent name takes priority over task for scope
+        assert processor._test_traces[0].scope == "research-agent"
+
+    def test_scope_falls_back_to_task(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1", name="my-workflow")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].scope == "my-workflow"
+
+    def test_scope_none_when_empty(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].scope is None
+
+
+class TestTags:
+    def test_group_id_tag(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1", group_id="session-123")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert "group:session-123" in processor._test_traces[0].tags
+
+    def test_metadata_tags(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1", metadata={"tags": ["prod", "v2"]})
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        tags = processor._test_traces[0].tags
+        assert "prod" in tags
+        assert "v2" in tags
+
+    def test_no_tags_when_absent(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].tags == []
+
+
+class TestSearchResultsCount:
+    def test_json_list_output(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_span_end(
+            _span(
+                span_data=FunctionSpanData(
+                    name="web_search",
+                    input="python openai",
+                    output='[{"title": "a"}, {"title": "b"}]',
+                ),
+            )
+        )
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].searches[0].results_count == 2
+
+    def test_nonempty_string_output(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_span_end(
+            _span(
+                span_data=FunctionSpanData(
+                    name="web_search", input="query", output="some result text"
+                ),
+            )
+        )
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].searches[0].results_count == 1
+
+    def test_empty_output(self, processor: Any) -> None:
+        trace = FakeTrace(trace_id="t1")
+        processor.on_trace_start(trace)
+        processor.on_span_end(
+            _span(
+                span_data=FunctionSpanData(name="web_search", input="query", output=""),
+            )
+        )
+        processor.on_trace_end(trace)
+        assert processor._test_traces[0].searches[0].results_count == 0

@@ -4,12 +4,11 @@ import importlib.util
 import json
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, cast
 
-from openflux._util import content_hash, generate_trace_id, utc_now
+from openflux._util import generate_trace_id, utc_now
 from openflux.schema import (
-    ContextRecord,
-    ContextType,
     SearchRecord,
     Status,
     TokenUsage,
@@ -25,21 +24,61 @@ else:
     TracingProcessor = object
 
 
-_DEFAULT_SEARCH_TOOLS: set[str] = {"web_search", "search", "retrieve"}
+_DEFAULT_SEARCH_TOOLS: set[str] = {
+    "web_search",
+    "search_web",
+    "search",
+    "retrieve",
+    "bing_search",
+    "google_search",
+}
 
 
 @dataclass(slots=True)
 class _TraceAccumulator:
     trace_id: str
     started_at: str = ""
+    first_span_at: str = ""
+    last_span_at: str = ""
     agent_name: str = ""
     model: str = ""
+    task: str = ""
+    last_generation_output: str = ""
+    generation_count: int = 0
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     tools: list[ToolRecord] = field(default_factory=lambda: list[ToolRecord]())
     searches: list[SearchRecord] = field(default_factory=lambda: list[SearchRecord]())
-    context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
+    tags: list[str] = field(default_factory=lambda: list[str]())
     metadata: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
     has_error: bool = False
+
+
+def _estimate_results_count(raw_output: Any) -> int:
+    """Best-effort count of search results from tool output."""
+    if not raw_output:
+        return 0
+    output_str = str(raw_output)
+    # Try JSON list first
+    try:
+        parsed = json.loads(output_str)
+        if isinstance(parsed, list):
+            return len(parsed)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # Non-empty output means at least 1 result
+    return 1 if output_str.strip() else 0
+
+
+def _compute_duration_ms(started: str, ended: str) -> int:
+    """Compute millisecond delta between two ISO timestamps."""
+    if not started or not ended:
+        return 0
+    try:
+        s = datetime.fromisoformat(started)
+        e = datetime.fromisoformat(ended)
+        return max(0, int((e - s).total_seconds() * 1000))
+    except (ValueError, TypeError):
+        return 0
 
 
 class OpenFluxProcessor(TracingProcessor):
@@ -60,10 +99,28 @@ class OpenFluxProcessor(TracingProcessor):
 
     def on_trace_start(self, trace: Any) -> None:
         trace_id: str = str(getattr(trace, "trace_id", str(trace)))
+        # TraceImpl exposes workflow name as `name`, not `workflow_name`
+        task: str = str(
+            getattr(trace, "name", "") or getattr(trace, "workflow_name", "") or ""
+        )
+
+        # Extract tags from group_id and metadata if available
+        tags: list[str] = []
+        group_id: str = str(getattr(trace, "group_id", "") or "")
+        if group_id:
+            tags.append(f"group:{group_id}")
+        trace_meta = getattr(trace, "metadata", None)
+        if isinstance(trace_meta, dict):
+            meta_tags = trace_meta.get("tags")
+            if isinstance(meta_tags, list):
+                tags.extend(str(t) for t in meta_tags)
+
         with self._lock:
             self._traces[trace_id] = _TraceAccumulator(
                 trace_id=trace_id,
                 started_at=utc_now(),
+                task=task,
+                tags=tags,
             )
 
     def on_trace_end(self, trace: Any) -> None:
@@ -99,6 +156,9 @@ class OpenFluxProcessor(TracingProcessor):
         if getattr(span, "error", None):
             acc.has_error = True
 
+        # Track span timestamps for trace-level duration_ms
+        self._update_span_timestamps(span, acc)
+
         class_name = type(span_data).__name__
         match class_name:
             case "AgentSpanData":
@@ -132,32 +192,57 @@ class OpenFluxProcessor(TracingProcessor):
         with self._lock:
             return list(self._completed)
 
+    def _update_span_timestamps(self, span: Any, acc: _TraceAccumulator) -> None:
+        """Track earliest start and latest end across all spans."""
+        started = str(getattr(span, "started_at", "") or "")
+        ended = str(getattr(span, "ended_at", "") or "")
+        if started and (not acc.first_span_at or started < acc.first_span_at):
+            acc.first_span_at = started
+        if ended and (not acc.last_span_at or ended > acc.last_span_at):
+            acc.last_span_at = ended
+
     def _handle_agent_span(self, span_data: Any, acc: _TraceAccumulator) -> None:
         name: str = str(getattr(span_data, "name", ""))
         if name:
             acc.agent_name = name
-        instructions: str | None = getattr(span_data, "instructions", None)
-        if instructions:
-            acc.context.append(
-                ContextRecord(
-                    type=ContextType.SYSTEM_PROMPT,
-                    source=f"agent:{name}",
-                    content_hash=content_hash(instructions),
-                    content=instructions,
-                    bytes=len(instructions.encode("utf-8")),
-                    timestamp=utc_now(),
-                )
-            )
+        # AgentSpanData has no instructions field — system prompts can't be captured
+        output_type: str | None = getattr(span_data, "output_type", None)
+        if output_type:
+            acc.metadata["output_type"] = str(output_type)
 
     def _handle_generation_span(self, span_data: Any, acc: _TraceAccumulator) -> None:
+        acc.generation_count += 1
         model: str = str(getattr(span_data, "model", ""))
         if model:
             acc.model = model
+        self._accumulate_usage(span_data, acc)
+        self._capture_decision(span_data, acc)
+
+    def _accumulate_usage(self, span_data: Any, acc: _TraceAccumulator) -> None:
         raw_usage = getattr(span_data, "usage", None)
         if raw_usage and isinstance(raw_usage, dict):
             usage = cast(dict[str, Any], raw_usage)
-            acc.token_usage.input_tokens += int(usage.get("input_tokens", 0))
-            acc.token_usage.output_tokens += int(usage.get("output_tokens", 0))
+            acc.token_usage.input_tokens += int(
+                usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
+            )
+            acc.token_usage.output_tokens += int(
+                usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
+            )
+
+    def _capture_decision(self, span_data: Any, acc: _TraceAccumulator) -> None:
+        """Extract last assistant message content as the trace decision."""
+        output = getattr(span_data, "output", None)
+        if not output or not isinstance(output, (list, tuple)):
+            return
+        # Walk output messages in reverse to find last assistant content
+        for msg in reversed(output):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if content:
+                    acc.last_generation_output = str(content)[:2048]
+                    return
 
     def _handle_function_span(
         self, span: Any, span_data: Any, acc: _TraceAccumulator
@@ -176,6 +261,7 @@ class OpenFluxProcessor(TracingProcessor):
                 SearchRecord(
                     query=str(raw_input)[:500] if raw_input else "",
                     engine=name,
+                    results_count=_estimate_results_count(raw_output),
                     timestamp=utc_now(),
                 )
             )
@@ -183,16 +269,7 @@ class OpenFluxProcessor(TracingProcessor):
             error = bool(getattr(span, "error", None))
             started = getattr(span, "started_at", "")
             ended = getattr(span, "ended_at", "")
-            duration_ms = 0
-            if started and ended:
-                try:
-                    from datetime import datetime
-
-                    s = datetime.fromisoformat(str(started))
-                    e = datetime.fromisoformat(str(ended))
-                    duration_ms = int((e - s).total_seconds() * 1000)
-                except (ValueError, TypeError):
-                    pass
+            duration_ms = _compute_duration_ms(str(started), str(ended))
 
             acc.tools.append(
                 ToolRecord(
@@ -224,26 +301,37 @@ class OpenFluxProcessor(TracingProcessor):
         )
 
     def _build_trace(self, acc: _TraceAccumulator) -> Trace:
+        duration_ms = _compute_duration_ms(acc.first_span_at, acc.last_span_at)
+        # scope defaults to agent name, falling back to task/workflow name
+        scope = acc.agent_name or acc.task or None
         return Trace(
             id=generate_trace_id(),
             timestamp=acc.started_at or utc_now(),
             agent=self._agent,
             session_id=acc.trace_id,
             model=acc.model,
+            task=acc.task,
+            decision=acc.last_generation_output,
             status=Status.ERROR if acc.has_error else Status.COMPLETED,
+            scope=scope,
+            tags=acc.tags,
             tools_used=acc.tools,
             searches=acc.searches,
-            context=acc.context,
             token_usage=acc.token_usage,
-            turn_count=len(acc.tools),
+            turn_count=acc.generation_count,
+            duration_ms=duration_ms,
             metadata=acc.metadata,
         )
 
     def _write_default_sink(self, trace: Trace) -> None:
         try:
+            import os
+            from pathlib import Path
+
             from openflux.sinks.sqlite import SQLiteSink
 
-            sink = SQLiteSink()
+            db_env = os.environ.get("OPENFLUX_DB_PATH", "")
+            sink = SQLiteSink(path=Path(db_env)) if db_env else SQLiteSink()
             sink.write(trace)
             sink.close()
         except Exception:
