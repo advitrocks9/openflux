@@ -16,7 +16,9 @@ from openflux.adapters._claude_code import (
     _build_trace,
     _classify_tool,
     _cleanup,
+    _find_transcript,
     _meta_path,
+    _parse_transcript,
     _read_buffer,
     handle_post_tool_use,
     handle_post_tool_use_failure,
@@ -473,11 +475,41 @@ class TestCorrectionPattern:
     def test_transcript_detection(
         self, tmp_path: Path, _patch_openflux_dir: Any
     ) -> None:
-        transcript = tmp_path / "transcript.txt"
-        transcript.write_text(
-            "user: no, that's wrong\nuser: actually, use the other approach\n",
-            encoding="utf-8",
-        )
+        # JSONL transcript with user corrections
+        transcript = tmp_path / "transcript.jsonl"
+        lines = [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": "help me fix this"},
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": "/project",
+                    "gitBranch": "main",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": "no, that's wrong, use the other approach",
+                    },
+                    "timestamp": "2026-01-01T00:01:00Z",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": "actually, do it differently",
+                    },
+                    "timestamp": "2026-01-01T00:02:00Z",
+                }
+            ),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
         sid = "ses-corrections"
         handle_session_start({"session_id": sid})
         handle_post_tool_use(
@@ -555,6 +587,189 @@ class TestBuildTrace:
         assert env["permission_mode"] == "default"
 
 
+class TestTranscriptParsing:
+    """Test JSONL transcript parsing for session-level fields."""
+
+    def _make_transcript(self, tmp_path: Path, entries: list[dict[str, Any]]) -> Path:
+        path = tmp_path / "session.jsonl"
+        lines = [json.dumps(e) for e in entries]
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
+    def test_extracts_task_from_first_user_message(self, tmp_path: Path) -> None:
+        path = self._make_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "user",
+                    "message": {"content": "Fix the login bug"},
+                    "timestamp": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "type": "user",
+                    "message": {"content": "Also update the README"},
+                    "timestamp": "2026-01-01T00:01:00Z",
+                },
+            ],
+        )
+        data = _parse_transcript(path)
+        assert data.task == "Fix the login bug"
+        assert data.turn_count == 2
+
+    def test_extracts_decision_from_last_assistant(self, tmp_path: Path) -> None:
+        path = self._make_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "model": "claude-sonnet-4-20250514",
+                        "content": [{"type": "text", "text": "First response"}],
+                        "usage": {"input_tokens": 100, "output_tokens": 50},
+                    },
+                    "timestamp": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "model": "claude-sonnet-4-20250514",
+                        "content": [{"type": "text", "text": "Final answer here"}],
+                        "usage": {"input_tokens": 200, "output_tokens": 75},
+                    },
+                    "timestamp": "2026-01-01T00:05:00Z",
+                },
+            ],
+        )
+        data = _parse_transcript(path)
+        assert data.decision == "Final answer here"
+        assert data.model == "claude-sonnet-4-20250514"
+
+    def test_accumulates_token_usage(self, tmp_path: Path) -> None:
+        path = self._make_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 10,
+                            "cache_creation_input_tokens": 20,
+                        }
+                    },
+                    "timestamp": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 200,
+                            "output_tokens": 75,
+                            "cache_read_input_tokens": 30,
+                        }
+                    },
+                    "timestamp": "2026-01-01T00:01:00Z",
+                },
+            ],
+        )
+        data = _parse_transcript(path)
+        assert data.token_usage is not None
+        assert data.token_usage.input_tokens == 300
+        assert data.token_usage.output_tokens == 125
+        assert data.token_usage.cache_read_tokens == 40
+        assert data.token_usage.cache_creation_tokens == 20
+
+    def test_computes_duration_and_scope(self, tmp_path: Path) -> None:
+        path = self._make_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "user",
+                    "message": {"content": "hi"},
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": "/Users/dev/myproject",
+                    "gitBranch": "feature/auth",
+                },
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "done"}]},
+                    "timestamp": "2026-01-01T00:02:30Z",
+                },
+            ],
+        )
+        data = _parse_transcript(path)
+        assert data.duration_ms == 150000  # 2.5 minutes
+        assert data.scope == "myproject/feature/auth"
+
+    def test_find_transcript_constructs_correct_path(self, tmp_path: Path) -> None:
+        # Simulate Claude Code's directory structure
+        project_dir = tmp_path / ".claude" / "projects" / "-Users-dev-myproject"
+        project_dir.mkdir(parents=True)
+        transcript = project_dir / "ses-abc123.jsonl"
+        transcript.write_text("{}", encoding="utf-8")
+
+        with patch("openflux.adapters._claude_code.Path.home", return_value=tmp_path):
+            result = _find_transcript("ses-abc123", "/Users/dev/myproject")
+            assert result is not None
+            assert result == transcript
+
+    def test_build_trace_with_transcript(self, tmp_path: Path) -> None:
+        """Full integration: _build_trace uses transcript data."""
+        transcript = self._make_transcript(
+            tmp_path,
+            [
+                {
+                    "type": "user",
+                    "message": {"content": "Fix the tests"},
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": "/project",
+                    "gitBranch": "main",
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "model": "claude-opus-4-6",
+                        "content": [{"type": "text", "text": "All tests pass now."}],
+                        "usage": {"input_tokens": 500, "output_tokens": 200},
+                    },
+                    "timestamp": "2026-01-01T00:03:00Z",
+                },
+            ],
+        )
+        meta = SessionMeta(session_id="s1", started_at="2026-01-01T00:00:00Z")
+        events: list[dict[str, Any]] = [
+            {
+                "tool_name": "Bash",
+                "timestamp": "t1",
+                "classified": {
+                    "searches": [],
+                    "sources": [],
+                    "tools": [
+                        {
+                            "name": "Bash",
+                            "tool_input": "pytest",
+                            "tool_output": "passed",
+                            "duration_ms": 0,
+                            "error": False,
+                            "timestamp": "t1",
+                        }
+                    ],
+                    "files_modified": [],
+                },
+            }
+        ]
+        trace = _build_trace(events, meta, {"transcript_path": str(transcript)})
+        assert trace.task == "Fix the tests"
+        assert trace.decision == "All tests pass now."
+        assert trace.model == "claude-opus-4-6"
+        assert trace.token_usage is not None
+        assert trace.token_usage.input_tokens == 500
+        assert trace.scope == "project/main"
+        assert trace.duration_ms == 180000  # 3 minutes
+        assert trace.turn_count == 1  # 1 user message
+
+
 class TestClaudeCodeAdapter:
     def test_hook_config_subcommands(self) -> None:
         config = ClaudeCodeAdapter().hook_config()
@@ -573,4 +788,4 @@ class TestClaudeCodeAdapter:
         config = ClaudeCodeAdapter.hook_config()
         for hook_list in config["hooks"].values():
             for hook in hook_list:
-                assert "openflux.adapters.claude_code" in hook["command"]
+                assert "openflux.adapters._claude_code" in hook["command"]

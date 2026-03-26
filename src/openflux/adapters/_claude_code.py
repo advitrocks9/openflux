@@ -25,6 +25,7 @@ from openflux.schema import (
     SourceRecord,
     SourceType,
     Status,
+    TokenUsage,
     ToolRecord,
     Trace,
 )
@@ -44,6 +45,23 @@ _FILE_CONTENT_MAX = 4096
 _URL_CONTENT_MAX = 16384
 _TOOL_INPUT_MAX = 4096
 _TOOL_OUTPUT_MAX = 16384
+_TASK_MAX = 500
+_DECISION_MAX = 300
+_CORRECTION_TEXT_MAX = 300
+
+
+@dataclass(slots=True)
+class TranscriptData:
+    """Extracted session-level data from Claude Code's JSONL transcript."""
+
+    task: str = ""
+    decision: str = ""
+    model: str = ""
+    token_usage: TokenUsage | None = None
+    turn_count: int = 0
+    duration_ms: int = 0
+    scope: str | None = None
+    correction: str | None = None
 
 
 @dataclass(slots=True)
@@ -516,6 +534,32 @@ def handle_session_end(data: dict[str, Any]) -> None:
     _cleanup(session_id)
 
 
+_TAG_RULES: dict[str, frozenset[str]] = {
+    "code-edit": frozenset({"Edit", "Write"}),
+    "web-research": frozenset({"WebSearch", "WebFetch"}),
+    "shell": frozenset({"Bash"}),
+    "file-search": frozenset({"Grep", "Glob"}),
+    "file-read": frozenset({"Read"}),
+}
+
+
+def _derive_tags(events: list[dict[str, Any]], has_error: bool) -> list[str]:
+    """Auto-generate tags from observed tool usage patterns."""
+    seen_tools: set[str] = set()
+    for event in events:
+        tool_name = event.get("tool_name", "")
+        if tool_name:
+            seen_tools.add(tool_name)
+
+    tags: list[str] = []
+    for tag, tool_set in _TAG_RULES.items():
+        if seen_tools & tool_set:
+            tags.append(tag)
+    if has_error:
+        tags.append("has-errors")
+    return tags
+
+
 def _build_trace(
     events: list[dict[str, Any]],
     meta: SessionMeta,
@@ -532,11 +576,14 @@ def _build_trace(
 
     all_files_modified: list[str] = []
     has_error = False
+    tool_event_count = 0
 
     for event in events:
         classified = event.get("classified", {})
         if event.get("error"):
             has_error = True
+        # Count all tool events, not just those classified as tools_used
+        tool_event_count += 1
 
         for search_dict in classified.get("searches", []):
             trace.searches.append(SearchRecord(**search_dict))
@@ -552,13 +599,78 @@ def _build_trace(
             seen.add(f)
             trace.files_modified.append(f)
 
-    trace.turn_count = len(trace.tools_used)
-
     if has_error:
         trace.status = Status.ERROR
 
+    trace.metadata["environment"] = {
+        "cwd": meta.cwd,
+        "permission_mode": meta.permission_mode,
+    }
+
+    # Try transcript parsing first (richest data source), fall back to hook data
+    transcript = _try_parse_transcript(meta, end_data)
+    if transcript:
+        _apply_transcript_data(trace, transcript, tool_event_count)
+    else:
+        _apply_fallback_data(trace, meta, tool_event_count)
+
+    trace.tags = _derive_tags(events, has_error)
+    return trace
+
+
+def _try_parse_transcript(
+    meta: SessionMeta, end_data: dict[str, Any]
+) -> TranscriptData | None:
+    """Attempt to find and parse the Claude Code JSONL transcript."""
+    # Check if hook provided transcript_path directly
+    transcript_path = end_data.get("transcript_path", "")
+    if transcript_path:
+        path = Path(transcript_path)
+        if path.exists():
+            return _parse_transcript(path)
+
+    # Discover transcript from session_id + cwd
+    path = _find_transcript(meta.session_id, meta.cwd)
+    if path:
+        return _parse_transcript(path)
+
+    return None
+
+
+def _apply_transcript_data(
+    trace: Trace, td: TranscriptData, tool_event_count: int
+) -> None:
+    """Populate trace fields from parsed transcript data."""
+    if td.task:
+        trace.task = td.task
+    if td.decision:
+        trace.decision = td.decision
+    if td.model:
+        trace.model = td.model
+    if td.token_usage:
+        trace.token_usage = td.token_usage
+    if td.correction:
+        trace.correction = td.correction
+    if td.scope:
+        trace.scope = td.scope
+    # Prefer transcript turn_count (user entries), fall back to tool events
+    trace.turn_count = td.turn_count if td.turn_count > 0 else tool_event_count
+    # Prefer transcript duration (first→last timestamp), more accurate
+    trace.duration_ms = td.duration_ms
+
+
+def _apply_fallback_data(
+    trace: Trace, meta: SessionMeta, tool_event_count: int
+) -> None:
+    """Populate trace fields when transcript is unavailable."""
+    trace.turn_count = tool_event_count
+    # Derive scope from cwd when transcript is unavailable
+    if meta.cwd:
+        trace.scope = Path(meta.cwd).name
+    # Duration from session_start → now
     if meta.started_at:
         from datetime import UTC, datetime
+
         try:
             start = datetime.fromisoformat(meta.started_at.replace("Z", "+00:00"))
             now = datetime.now(UTC)
@@ -566,16 +678,141 @@ def _build_trace(
         except ValueError:
             pass
 
-    trace.metadata["environment"] = {
-        "cwd": meta.cwd,
-        "permission_mode": meta.permission_mode,
-    }
 
-    transcript_path = end_data.get("transcript_path", "")
-    if transcript_path:
-        _detect_corrections(transcript_path, trace)
+def _find_transcript(session_id: str, cwd: str) -> Path | None:
+    """Locate the Claude Code JSONL transcript for this session."""
+    if not cwd:
+        return None
+    # Claude Code normalizes cwd: /Users/foo/bar → -Users-foo-bar
+    normalized = cwd.replace("/", "-").replace("\\", "-")
+    path = Path.home() / ".claude" / "projects" / normalized / f"{session_id}.jsonl"
+    return path if path.exists() else None
 
-    return trace
+
+def _extract_user_text(message: dict[str, Any]) -> str:
+    """Extract text from a user message's content (string or content blocks)."""
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    # Content blocks array — concatenate text blocks
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+    return "\n".join(parts)
+
+
+def _extract_assistant_text(message: dict[str, Any]) -> str:
+    """Extract the last text block from an assistant message's content."""
+    content = message.get("content", [])
+    if isinstance(content, str):
+        return content
+    # Walk content blocks in reverse to find last text
+    for block in reversed(content):
+        if isinstance(block, dict) and block.get("type") == "text":
+            return block.get("text", "")
+    return ""
+
+
+def _accumulate_usage(usage: dict[str, Any], totals: TokenUsage) -> None:
+    """Add a single message's usage to running totals."""
+    totals.input_tokens += usage.get("input_tokens", 0)
+    totals.output_tokens += usage.get("output_tokens", 0)
+    totals.cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+    totals.cache_creation_tokens += usage.get("cache_creation_input_tokens", 0)
+
+
+def _parse_transcript(path: Path) -> TranscriptData:
+    """Parse Claude Code's JSONL transcript for session-level fields."""
+    data = TranscriptData()
+    token_totals = TokenUsage()
+
+    first_timestamp: str = ""
+    last_timestamp: str = ""
+    last_correction_text: str = ""
+    correction_count = 0
+    git_branch: str = ""
+    project_name: str = ""
+
+    with path.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ts = entry.get("timestamp", "")
+            if ts:
+                if not first_timestamp:
+                    first_timestamp = ts
+                last_timestamp = ts
+
+            if not git_branch:
+                git_branch = entry.get("gitBranch", "")
+            if not project_name:
+                cwd = entry.get("cwd", "")
+                if cwd:
+                    project_name = Path(cwd).name
+
+            msg = entry.get("message", {})
+            entry_type = entry.get("type", "")
+
+            if entry_type == "user":
+                data.turn_count += 1
+                text = _extract_user_text(msg)
+                # First user message → task
+                if not data.task and text:
+                    data.task = truncate_content(text, _TASK_MAX)
+                # Check for corrections in all user messages
+                if text and CORRECTION_PATTERN.search(text):
+                    correction_count += 1
+                    last_correction_text = text
+
+            elif entry_type == "assistant":
+                if not data.model:
+                    data.model = msg.get("model", "")
+                usage = msg.get("usage")
+                if usage:
+                    _accumulate_usage(usage, token_totals)
+                text = _extract_assistant_text(msg)
+                if text:
+                    # Keep updating — we want the last one
+                    data.decision = truncate_content(text, _DECISION_MAX)
+
+    # Duration from first→last transcript timestamp
+    data.duration_ms = _timestamp_delta_ms(first_timestamp, last_timestamp)
+
+    # Scope: project/branch
+    if project_name or git_branch:
+        data.scope = f"{project_name}/{git_branch}" if git_branch else project_name
+
+    # Token usage (only set if we actually saw usage data)
+    if token_totals.input_tokens or token_totals.output_tokens:
+        data.token_usage = token_totals
+
+    # Corrections
+    if correction_count > 0:
+        snippet = truncate_content(last_correction_text, _CORRECTION_TEXT_MAX)
+        data.correction = f"Detected {correction_count} correction(s). Last: {snippet}"
+
+    return data
+
+
+def _timestamp_delta_ms(first: str, last: str) -> int:
+    """Compute millisecond delta between two ISO 8601 timestamps."""
+    if not first or not last:
+        return 0
+    from datetime import datetime
+
+    try:
+        t0 = datetime.fromisoformat(first.replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        return max(0, int((t1 - t0).total_seconds() * 1000))
+    except ValueError:
+        return 0
 
 
 def _detect_corrections(transcript_path: str, trace: Trace) -> None:
@@ -607,7 +844,7 @@ def _write_to_sinks(trace: Trace) -> None:
 class ClaudeCodeAdapter:
     @staticmethod
     def hook_config() -> dict[str, Any]:
-        base = "python3 -m openflux.adapters.claude_code"
+        base = "python3 -m openflux.adapters._claude_code"
         return {
             "hooks": {
                 "SessionStart": [
@@ -641,7 +878,7 @@ def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] not in _SUBCOMMANDS:
         valid = ", ".join(_SUBCOMMANDS)
         print(
-            f"Usage: python3 -m openflux.adapters.claude_code <{valid}>",
+            f"Usage: python3 -m openflux.adapters._claude_code <{valid}>",
             file=sys.stderr,
         )
         sys.exit(1)
