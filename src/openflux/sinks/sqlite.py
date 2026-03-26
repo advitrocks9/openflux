@@ -12,7 +12,7 @@ from openflux.sinks.base import Sink
 
 _DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -88,17 +88,30 @@ CREATE TABLE IF NOT EXISTS trace_tools (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS traces_fts USING fts5(
     task, decision, correction, scope,
+    agent, model, session_id, files_modified,
     content=traces, content_rowid=rowid
 );
 
 CREATE TRIGGER IF NOT EXISTS traces_fts_insert AFTER INSERT ON traces BEGIN
-    INSERT INTO traces_fts(rowid, task, decision, correction, scope)
-    VALUES (new.rowid, new.task, new.decision, new.correction, new.scope);
+    INSERT INTO traces_fts(
+        rowid, task, decision, correction, scope,
+        agent, model, session_id, files_modified
+    )
+    VALUES (
+        new.rowid, new.task, new.decision, new.correction, new.scope,
+        new.agent, new.model, new.session_id, new.files_modified
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS traces_fts_delete AFTER DELETE ON traces BEGIN
-    INSERT INTO traces_fts(traces_fts, rowid, task, decision, correction, scope)
-    VALUES ('delete', old.rowid, old.task, old.decision, old.correction, old.scope);
+    INSERT INTO traces_fts(
+        traces_fts, rowid, task, decision, correction, scope,
+        agent, model, session_id, files_modified
+    )
+    VALUES (
+        'delete', old.rowid, old.task, old.decision, old.correction, old.scope,
+        old.agent, old.model, old.session_id, old.files_modified
+    );
 END;
 
 CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
@@ -156,14 +169,29 @@ class SQLiteSink(Sink):
         )
         if cur.fetchone():
             row = cur.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if row and row[0] and row[0] >= _SCHEMA_VERSION:
+            current = row[0] if row and row[0] else 0
+            if current >= _SCHEMA_VERSION:
                 return
-        self._conn.executescript(_SCHEMA_SQL)
+            # Migrate: rebuild FTS with expanded columns
+            if current < 2:
+                self._migrate_fts_v2()
+        else:
+            self._conn.executescript(_SCHEMA_SQL)
         self._conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
             (_SCHEMA_VERSION,),
         )
         self._conn.commit()
+
+    def _migrate_fts_v2(self) -> None:
+        """Drop old FTS table/triggers and recreate with expanded columns."""
+        self._conn.executescript(
+            "DROP TRIGGER IF EXISTS traces_fts_insert;\n"
+            "DROP TRIGGER IF EXISTS traces_fts_delete;\n"
+            "DROP TABLE IF EXISTS traces_fts;\n"
+        )
+        # Recreate full schema (tables use IF NOT EXISTS, only FTS is new)
+        self._conn.executescript(_SCHEMA_SQL)
 
     @override
     def write(self, trace: Trace) -> None:
@@ -278,11 +306,13 @@ class SQLiteSink(Sink):
             )
 
     def search(self, query: str, limit: int = 10) -> list[Trace]:
+        # Wrap in double quotes so FTS5 treats dots/hyphens as literals
+        escaped = '"' + query.replace('"', '""') + '"'
         rows = self._conn.execute(
             "SELECT r.* FROM traces r "
             "JOIN traces_fts ON r.rowid = traces_fts.rowid "
             "WHERE traces_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, limit),
+            (escaped, limit),
         ).fetchall()
         return [self._row_to_trace(row) for row in rows]
 
@@ -351,12 +381,21 @@ class SQLiteSink(Sink):
         d["tags"] = json.loads(d["tags"])
         d["files_modified"] = json.loads(d["files_modified"])
         d["metadata"] = json.loads(d["metadata"])
-        d["token_usage"] = {
-            "input_tokens": d.pop("token_input"),
-            "output_tokens": d.pop("token_output"),
-            "cache_read_tokens": d.pop("token_cache_read"),
-            "cache_creation_tokens": d.pop("token_cache_creation"),
-        }
+        # Only construct token_usage when at least one value is non-zero,
+        # otherwise Trace.from_dict creates TokenUsage(0,0,0,0) instead of None
+        ti = d.pop("token_input")
+        to = d.pop("token_output")
+        tcr = d.pop("token_cache_read")
+        tcc = d.pop("token_cache_creation")
+        if ti or to or tcr or tcc:
+            d["token_usage"] = {
+                "input_tokens": ti,
+                "output_tokens": to,
+                "cache_read_tokens": tcr,
+                "cache_creation_tokens": tcc,
+            }
+        else:
+            d["token_usage"] = None
         d["context"] = self._load_nested(
             "SELECT type, source, content_hash, content, bytes, timestamp "
             "FROM trace_context WHERE trace_id = ?",

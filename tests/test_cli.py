@@ -46,26 +46,31 @@ def _mock_sink(
 class TestRelativeTime:
     def test_just_now(self) -> None:
         from datetime import UTC, datetime
+
         now = datetime.now(UTC).isoformat()
         assert _relative_time(now) == "just now"
 
     def test_minutes_ago(self) -> None:
         from datetime import UTC, datetime, timedelta
+
         ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         assert _relative_time(ts) == "5m ago"
 
     def test_hours_ago(self) -> None:
         from datetime import UTC, datetime, timedelta
+
         ts = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
         assert _relative_time(ts) == "3h ago"
 
     def test_days_ago(self) -> None:
         from datetime import UTC, datetime, timedelta
+
         ts = (datetime.now(UTC) - timedelta(days=2)).isoformat()
         assert _relative_time(ts) == "2d ago"
 
     def test_z_suffix(self) -> None:
         from datetime import UTC, datetime
+
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         assert _relative_time(now) == "just now"
 
@@ -373,11 +378,7 @@ class TestCmdInstall:
         hooks = settings["hooks"]
         for event, cmd in CLAUDE_CODE_HOOKS.items():
             assert event in hooks
-            cmds = [
-                h["command"]
-                for g in hooks[event]
-                for h in g.get("hooks", [])
-            ]
+            cmds = [h["command"] for g in hooks[event] for h in g.get("hooks", [])]
             assert cmd in cmds
         out = capsys.readouterr().out
         assert "Added hooks" in out
@@ -406,10 +407,21 @@ class TestCmdInstall:
     ) -> None:
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.parent.mkdir(parents=True)
-        existing = {"hooks": {"SessionStart": [{
-            "matcher": "",
-            "hooks": [{"type": "command", "command": CLAUDE_CODE_HOOKS["SessionStart"]}],
-        }]}}
+        existing = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": CLAUDE_CODE_HOOKS["SessionStart"],
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
         settings_path.write_text(json.dumps(existing))
         with patch("openflux.cli.Path.home", return_value=tmp_path):
             _run_cli(["install", "claude-code"], monkeypatch)
@@ -417,11 +429,7 @@ class TestCmdInstall:
         assert "Already configured" in out
         settings = json.loads(settings_path.read_text())
         session_hooks = settings["hooks"]["SessionStart"]
-        cmds = [
-            h["command"]
-            for g in session_hooks
-            for h in g.get("hooks", [])
-        ]
+        cmds = [h["command"] for g in session_hooks for h in g.get("hooks", [])]
         assert cmds.count(CLAUDE_CODE_HOOKS["SessionStart"]) == 1
 
     def test_list_adapters(
