@@ -251,7 +251,8 @@ class TestLangGraphScope:
             parent_run_id=parent_id,
         )
         handler.on_chain_end({"output": "answer"}, run_id=parent_id)
-        assert handler._test_traces[0].scope == "retrieve_node"
+        # Top-level chain name takes priority for scope
+        assert handler._test_traces[0].scope == "rag_pipeline"
 
     def test_task_from_input(self, handler: Any) -> None:
         run_id = uuid4()
