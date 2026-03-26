@@ -6,6 +6,7 @@ import pytest
 
 from openflux.adapters.google_adk import (
     GoogleADKAdapter,
+    _compute_duration_ms,
     _detect_handoffs,
     _extract_text,
     _SessionAccumulator,
@@ -61,9 +62,29 @@ class FakeUsageMetadata:
         self.candidates_token_count = candidates_token_count
 
 
-class FakeLlmRequest:
+class FakeConfig:
     def __init__(self, system_instruction: Any = None) -> None:
         self.system_instruction = system_instruction
+
+
+class FakeContentMessage:
+    """Represents a conversation message in llm_request.contents."""
+
+    def __init__(self, role: str = "user", parts: list[FakePart] | None = None) -> None:
+        self.role = role
+        self.parts = parts or []
+
+
+class FakeLlmRequest:
+    def __init__(
+        self,
+        system_instruction: Any = None,
+        model: str = "",
+        contents: list[FakeContentMessage] | None = None,
+    ) -> None:
+        self.config = FakeConfig(system_instruction) if system_instruction else None
+        self.model = model
+        self.contents = contents
 
 
 class FakeLlmResponse:
@@ -73,7 +94,7 @@ class FakeLlmResponse:
         usage_metadata: FakeUsageMetadata | None = None,
         content: FakeContent | None = None,
     ) -> None:
-        self.model = model
+        self.model_version = model  # ADK uses model_version, not model
         self.usage_metadata = usage_metadata
         self.content = content
 
@@ -374,3 +395,173 @@ class TestHelpers:
         content = FakeContent(parts=[FakePart(function_call=fc)])
         _detect_handoffs(content, acc)
         assert "handoffs" not in acc.metadata
+
+    def test_compute_duration_ms_valid(self) -> None:
+        start = "2026-03-25T10:00:00.000000Z"
+        end = "2026-03-25T10:00:01.500000Z"
+        assert _compute_duration_ms(start, end) == 1500
+
+    def test_compute_duration_ms_empty(self) -> None:
+        assert _compute_duration_ms("", "2026-03-25T10:00:00Z") == 0
+        assert _compute_duration_ms("2026-03-25T10:00:00Z", "") == 0
+
+
+class TestTaskExtraction:
+    def test_extracts_task_from_user_message(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        user_msg = FakeContentMessage(
+            role="user", parts=[FakePart(text="What's the weather in Paris?")]
+        )
+        request = FakeLlmRequest(contents=[user_msg])
+        adapter._before_model(ctx, request)
+
+        acc = adapter._sessions[ctx.session.id]
+        assert acc.task == "What's the weather in Paris?"
+
+    def test_skips_non_user_messages(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        model_msg = FakeContentMessage(
+            role="model", parts=[FakePart(text="I can help with that")]
+        )
+        request = FakeLlmRequest(contents=[model_msg])
+        adapter._before_model(ctx, request)
+
+        acc = adapter._sessions[ctx.session.id]
+        assert acc.task == ""
+
+    def test_task_not_overwritten_on_second_call(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        msg1 = FakeContentMessage(role="user", parts=[FakePart(text="First question")])
+        msg2 = FakeContentMessage(
+            role="user", parts=[FakePart(text="Follow-up question")]
+        )
+        adapter._before_model(ctx, FakeLlmRequest(contents=[msg1]))
+        adapter._before_model(ctx, FakeLlmRequest(contents=[msg2]))
+
+        acc = adapter._sessions[ctx.session.id]
+        assert acc.task == "First question"
+
+    def test_task_truncated_to_500_chars(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        long_text = "x" * 1000
+        msg = FakeContentMessage(role="user", parts=[FakePart(text=long_text)])
+        adapter._before_model(ctx, FakeLlmRequest(contents=[msg]))
+
+        acc = adapter._sessions[ctx.session.id]
+        assert len(acc.task) == 500
+
+    def test_no_contents_no_task(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        adapter._before_model(ctx, FakeLlmRequest())
+        acc = adapter._sessions[ctx.session.id]
+        assert acc.task == ""
+
+
+class TestDecisionCapture:
+    def test_captures_model_response_as_decision(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        content = FakeContent(parts=[FakePart(text="The weather is sunny in Paris.")])
+        response = FakeLlmResponse(content=content)
+        adapter._after_model(ctx, response)
+
+        acc = adapter._sessions[ctx.session.id]
+        assert acc.decision == "The weather is sunny in Paris."
+
+    def test_decision_overwrites_with_latest(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        resp1 = FakeLlmResponse(
+            content=FakeContent(parts=[FakePart(text="Let me check...")])
+        )
+        resp2 = FakeLlmResponse(
+            content=FakeContent(parts=[FakePart(text="It's 72°F and sunny.")])
+        )
+        adapter._after_model(ctx, resp1)
+        adapter._after_model(ctx, resp2)
+
+        acc = adapter._sessions[ctx.session.id]
+        assert acc.decision == "It's 72°F and sunny."
+
+    def test_decision_truncated_to_500_chars(
+        self, adapter: GoogleADKAdapter, ctx: FakeCallbackContext
+    ) -> None:
+        long_text = "y" * 1000
+        resp = FakeLlmResponse(content=FakeContent(parts=[FakePart(text=long_text)]))
+        adapter._after_model(ctx, resp)
+
+        acc = adapter._sessions[ctx.session.id]
+        assert len(acc.decision) == 500
+
+
+class TestTraceFields:
+    def test_trace_has_duration_ms(self, ctx: FakeCallbackContext) -> None:
+        collected: list[Any] = []
+        adapter = GoogleADKAdapter(agent="dur-test", on_trace=collected.append)
+        adapter._before_model(ctx, FakeLlmRequest())
+        traces = adapter.flush()
+
+        assert len(traces) == 1
+        assert traces[0].duration_ms >= 0
+
+    def test_trace_has_scope_from_agent_name(self, ctx: FakeCallbackContext) -> None:
+        collected: list[Any] = []
+        adapter = GoogleADKAdapter(agent="scope-test", on_trace=collected.append)
+        adapter._before_model(ctx, FakeLlmRequest())
+        traces = adapter.flush()
+
+        assert traces[0].scope == "test-agent"
+
+    def test_trace_has_tags(self, ctx: FakeCallbackContext) -> None:
+        collected: list[Any] = []
+        adapter = GoogleADKAdapter(agent="tag-test", on_trace=collected.append)
+        resp = FakeLlmResponse(model="gemini-2.5-flash")
+        adapter._before_model(ctx, FakeLlmRequest())
+        adapter._after_model(ctx, resp)
+        traces = adapter.flush()
+
+        assert "google-adk" in traces[0].tags
+        assert "gemini-2.5-flash" in traces[0].tags
+
+    def test_trace_has_task_and_decision(self, ctx: FakeCallbackContext) -> None:
+        collected: list[Any] = []
+        adapter = GoogleADKAdapter(agent="full-test", on_trace=collected.append)
+
+        user_msg = FakeContentMessage(
+            role="user", parts=[FakePart(text="Tell me a joke")]
+        )
+        adapter._before_model(ctx, FakeLlmRequest(contents=[user_msg]))
+        adapter._after_model(
+            ctx,
+            FakeLlmResponse(
+                content=FakeContent(
+                    parts=[FakePart(text="Why did the chicken cross the road?")]
+                )
+            ),
+        )
+        traces = adapter.flush()
+
+        assert traces[0].task == "Tell me a joke"
+        assert traces[0].decision == "Why did the chicken cross the road?"
+
+    def test_trace_scope_none_when_no_agent_name(self) -> None:
+        collected: list[Any] = []
+        adapter = GoogleADKAdapter(agent="no-scope", on_trace=collected.append)
+        ctx = FakeCallbackContext(agent_name="")
+        adapter._before_model(ctx, FakeLlmRequest())
+        traces = adapter.flush()
+
+        assert traces[0].scope is None
+
+    def test_tags_without_model(self, ctx: FakeCallbackContext) -> None:
+        collected: list[Any] = []
+        adapter = GoogleADKAdapter(agent="tag-test", on_trace=collected.append)
+        adapter._before_model(ctx, FakeLlmRequest())
+        traces = adapter.flush()
+
+        assert traces[0].tags == ["google-adk"]
