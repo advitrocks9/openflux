@@ -9,6 +9,7 @@ import pytest
 from openflux.adapters.bedrock import (
     BedrockAdapter,
     BedrockCloudWatchIngester,
+    _derive_tags,
     _handle_failure,
     _handle_guardrail,
     _handle_orchestration,
@@ -17,7 +18,7 @@ from openflux.adapters.bedrock import (
     _process_trace_event,
     _TraceAccumulator,
 )
-from openflux.schema import ContextType, SourceType, Status
+from openflux.schema import ContextType, SearchRecord, SourceType, Status, ToolRecord
 
 
 @pytest.fixture()
@@ -84,24 +85,22 @@ class TestOrchestration:
             "modelInvocationOutput": {
                 "metadata": {"usage": {"inputTokens": 100, "outputTokens": 50}},
                 "rationale": {"traceId": "t1", "text": "I need to look up the order"},
-                "invocationInput": {
-                    "traceId": "t1",
-                    "invocationType": "ACTION_GROUP",
-                    "actionGroupInvocationInput": {
-                        "actionGroupName": "OrderLookup",
-                        "apiPath": "/orders/{id}",
-                        "verb": "GET",
-                        "parameters": [
-                            {"name": "id", "type": "string", "value": "123"}
-                        ],
-                    },
+            },
+            "invocationInput": {
+                "traceId": "t1",
+                "invocationType": "ACTION_GROUP",
+                "actionGroupInvocationInput": {
+                    "actionGroupName": "OrderLookup",
+                    "apiPath": "/orders/{id}",
+                    "verb": "GET",
+                    "parameters": [{"name": "id", "type": "string", "value": "123"}],
                 },
-                "observation": {
-                    "traceId": "t1",
-                    "type": "ACTION_GROUP",
-                    "actionGroupInvocationOutput": {
-                        "text": '{"orderId": "123", "status": "shipped"}',
-                    },
+            },
+            "observation": {
+                "traceId": "t1",
+                "type": "ACTION_GROUP",
+                "actionGroupInvocationOutput": {
+                    "text": '{"orderId": "123", "status": "shipped"}',
                 },
             },
         }
@@ -122,35 +121,35 @@ class TestOrchestration:
             "modelInvocationInput": {},
             "modelInvocationOutput": {
                 "metadata": {"usage": {"inputTokens": 30, "outputTokens": 20}},
-                "invocationInput": {
-                    "invocationType": "KNOWLEDGE_BASE",
-                    "knowledgeBaseLookupInput": {
-                        "knowledgeBaseId": "kb-abc123",
-                        "text": "What is the return policy?",
-                    },
+            },
+            "invocationInput": {
+                "invocationType": "KNOWLEDGE_BASE",
+                "knowledgeBaseLookupInput": {
+                    "knowledgeBaseId": "kb-abc123",
+                    "text": "What is the return policy?",
                 },
-                "observation": {
-                    "type": "KNOWLEDGE_BASE",
-                    "knowledgeBaseLookupOutput": {
-                        "retrievedReferences": [
-                            {
-                                "content": {"text": "Returns accepted within 30 days."},
-                                "location": {
-                                    "type": "S3",
-                                    "s3Location": {"uri": "s3://docs/returns.pdf"},
-                                },
+            },
+            "observation": {
+                "type": "KNOWLEDGE_BASE",
+                "knowledgeBaseLookupOutput": {
+                    "retrievedReferences": [
+                        {
+                            "content": {"text": "Returns accepted within 30 days."},
+                            "location": {
+                                "type": "S3",
+                                "s3Location": {"uri": "s3://docs/returns.pdf"},
                             },
-                            {
-                                "content": {
-                                    "text": "Refunds processed in 5 business days."
-                                },
-                                "location": {
-                                    "type": "S3",
-                                    "s3Location": {"uri": "s3://docs/refunds.pdf"},
-                                },
+                        },
+                        {
+                            "content": {
+                                "text": "Refunds processed in 5 business days."
                             },
-                        ],
-                    },
+                            "location": {
+                                "type": "S3",
+                                "s3Location": {"uri": "s3://docs/refunds.pdf"},
+                            },
+                        },
+                    ],
                 },
             },
         }
@@ -170,23 +169,22 @@ class TestOrchestration:
         acc = _make_acc()
         trace = {
             "modelInvocationInput": {},
-            "modelInvocationOutput": {
-                "invocationInput": {
-                    "invocationType": "AGENT_COLLABORATOR",
-                    "agentCollaboratorInvocationInput": {
-                        "agentCollaboratorName": "math-agent",
-                        "agentCollaboratorAliasArn": (
-                            "arn:aws:bedrock:us-east-1:123:agent-alias/abc"
-                        ),
-                        "input": {"text": "calculate 2+2"},
-                    },
+            "modelInvocationOutput": {},
+            "invocationInput": {
+                "invocationType": "AGENT_COLLABORATOR",
+                "agentCollaboratorInvocationInput": {
+                    "agentCollaboratorName": "math-agent",
+                    "agentCollaboratorAliasArn": (
+                        "arn:aws:bedrock:us-east-1:123:agent-alias/abc"
+                    ),
+                    "input": {"text": "calculate 2+2"},
                 },
-                "observation": {
-                    "type": "AGENT_COLLABORATOR",
-                    "agentCollaboratorInvocationOutput": {
-                        "agentCollaboratorName": "math-agent",
-                        "output": {"text": "4"},
-                    },
+            },
+            "observation": {
+                "type": "AGENT_COLLABORATOR",
+                "agentCollaboratorInvocationOutput": {
+                    "agentCollaboratorName": "math-agent",
+                    "output": {"text": "4"},
                 },
             },
         }
@@ -201,11 +199,10 @@ class TestOrchestration:
         acc = _make_acc()
         trace = {
             "modelInvocationInput": {},
-            "modelInvocationOutput": {
-                "observation": {
-                    "type": "FINISH",
-                    "finalResponse": {"text": "Your order has been shipped."},
-                },
+            "modelInvocationOutput": {},
+            "observation": {
+                "type": "FINISH",
+                "finalResponse": {"text": "Your order has been shipped."},
             },
         }
         _handle_orchestration(trace, acc)
@@ -215,19 +212,18 @@ class TestOrchestration:
         acc = _make_acc()
         trace = {
             "modelInvocationInput": {},
-            "modelInvocationOutput": {
-                "invocationInput": {
-                    "invocationType": "ACTION_GROUP",
-                    "actionGroupInvocationInput": {
-                        "actionGroupName": "BadTool",
-                        "apiPath": "/fail",
-                        "verb": "POST",
-                    },
+            "modelInvocationOutput": {},
+            "invocationInput": {
+                "invocationType": "ACTION_GROUP",
+                "actionGroupInvocationInput": {
+                    "actionGroupName": "BadTool",
+                    "apiPath": "/fail",
+                    "verb": "POST",
                 },
-                "observation": {
-                    "type": "REPROMPT",
-                    "repromptResponse": {"source": "ACTION_GROUP", "text": "Try again"},
-                },
+            },
+            "observation": {
+                "type": "REPROMPT",
+                "repromptResponse": {"source": "ACTION_GROUP", "text": "Try again"},
             },
         }
         _handle_orchestration(trace, acc)
@@ -290,11 +286,10 @@ class TestProcessTraceEvent:
             {
                 "orchestrationTrace": {
                     "modelInvocationInput": {},
-                    "modelInvocationOutput": {
-                        "observation": {
-                            "type": "FINISH",
-                            "finalResponse": {"text": "done"},
-                        },
+                    "modelInvocationOutput": {},
+                    "observation": {
+                        "type": "FINISH",
+                        "finalResponse": {"text": "done"},
                     },
                 },
             },
@@ -356,29 +351,28 @@ class TestParseInvokeAgentResponse:
                             "metadata": {
                                 "usage": {"inputTokens": 200, "outputTokens": 80}
                             },
-                            "invocationInput": {
-                                "invocationType": "ACTION_GROUP",
-                                "actionGroupInvocationInput": {
-                                    "actionGroupName": "SearchAPI",
-                                    "apiPath": "/search",
-                                    "verb": "GET",
-                                },
+                        },
+                        "invocationInput": {
+                            "invocationType": "ACTION_GROUP",
+                            "actionGroupInvocationInput": {
+                                "actionGroupName": "SearchAPI",
+                                "apiPath": "/search",
+                                "verb": "GET",
                             },
-                            "observation": {
-                                "type": "ACTION_GROUP",
-                                "actionGroupInvocationOutput": {"text": "results"},
-                            },
+                        },
+                        "observation": {
+                            "type": "ACTION_GROUP",
+                            "actionGroupInvocationOutput": {"text": "results"},
                         },
                     },
                 },
                 {
                     "orchestrationTrace": {
                         "modelInvocationInput": {},
-                        "modelInvocationOutput": {
-                            "observation": {
-                                "type": "FINISH",
-                                "finalResponse": {"text": "Here are the results."},
-                            },
+                        "modelInvocationOutput": {},
+                        "observation": {
+                            "type": "FINISH",
+                            "finalResponse": {"text": "Here are the results."},
                         },
                     },
                 },
@@ -435,10 +429,10 @@ class TestParseTraceDict:
                 "modelInvocationInput": {"foundationModel": "anthropic.claude-3-haiku"},
                 "modelInvocationOutput": {
                     "metadata": {"usage": {"inputTokens": 50, "outputTokens": 25}},
-                    "observation": {
-                        "type": "FINISH",
-                        "finalResponse": {"text": "Answer"},
-                    },
+                },
+                "observation": {
+                    "type": "FINISH",
+                    "finalResponse": {"text": "Answer"},
                 },
             },
         }
@@ -486,10 +480,10 @@ class TestCloudWatchIngester:
                                     "metadata": {
                                         "usage": {"inputTokens": 10, "outputTokens": 5}
                                     },
-                                    "observation": {
-                                        "type": "FINISH",
-                                        "finalResponse": {"text": "CW answer"},
-                                    },
+                                },
+                                "observation": {
+                                    "type": "FINISH",
+                                    "finalResponse": {"text": "CW answer"},
                                 },
                             },
                         },
@@ -556,3 +550,152 @@ class TestCloudWatchIngester:
 
         with pytest.raises(RuntimeError, match="Failed to read CloudWatch"):
             ingester.poll(start_time=0, end_time=9999999999999)
+
+
+class TestTaskScopeTags:
+    def test_task_passthrough(self, adapter: BedrockAdapter) -> None:
+        trace = adapter.parse_invoke_agent_response(
+            [], task="What is the vacation policy?"
+        )
+        assert trace.task == "What is the vacation policy?"
+
+    def test_scope_passthrough(self, adapter: BedrockAdapter) -> None:
+        trace = adapter.parse_invoke_agent_response([], scope="hr-assistant")
+        assert trace.scope == "hr-assistant"
+
+    def test_tags_passthrough(self, adapter: BedrockAdapter) -> None:
+        trace = adapter.parse_invoke_agent_response([], tags=["hr", "query"])
+        assert "hr" in trace.tags
+        assert "query" in trace.tags
+
+    def test_parse_trace_dict_accepts_task_scope_tags(
+        self, adapter: BedrockAdapter
+    ) -> None:
+        trace = adapter.parse_trace_dict(
+            {
+                "preProcessingTrace": {
+                    "modelInvocationInput": {"text": "prompt"},
+                    "modelInvocationOutput": {},
+                }
+            },
+            task="lookup order",
+            scope="order-agent",
+            tags=["order"],
+        )
+        assert trace.task == "lookup order"
+        assert trace.scope == "order-agent"
+        assert "order" in trace.tags
+
+    def test_defaults_when_omitted(self, adapter: BedrockAdapter) -> None:
+        trace = adapter.parse_invoke_agent_response([])
+        assert trace.task == ""
+        assert trace.scope is None
+
+
+class TestDurationMs:
+    def test_duration_ms_positive(self, adapter: BedrockAdapter) -> None:
+        """duration_ms should be >= 0 after processing events."""
+        events = _make_event_stream(
+            [
+                {
+                    "preProcessingTrace": {
+                        "modelInvocationInput": {"text": "hi"},
+                        "modelInvocationOutput": {},
+                    },
+                },
+            ]
+        )
+        trace = adapter.parse_invoke_agent_response(events)
+        assert trace.duration_ms >= 0
+
+    def test_duration_ms_empty_stream(self, adapter: BedrockAdapter) -> None:
+        trace = adapter.parse_invoke_agent_response([])
+        assert trace.duration_ms >= 0
+
+    def test_started_at_gives_real_duration(self, adapter: BedrockAdapter) -> None:
+        """Caller-provided started_at should produce meaningful duration_ms."""
+        # Use a timestamp 500ms in the past to guarantee a measurable duration
+        from datetime import UTC, datetime, timedelta
+
+        past = datetime.now(UTC) - timedelta(milliseconds=500)
+        started_at = past.isoformat()
+
+        trace = adapter.parse_invoke_agent_response([], started_at=started_at)
+        assert trace.duration_ms >= 400  # allow some tolerance
+
+    def test_started_at_on_parse_trace_dict(self, adapter: BedrockAdapter) -> None:
+        """parse_trace_dict should also accept started_at."""
+        from datetime import UTC, datetime, timedelta
+
+        past = datetime.now(UTC) - timedelta(milliseconds=500)
+        started_at = past.isoformat()
+
+        trace_data = {
+            "preProcessingTrace": {
+                "modelInvocationInput": {"text": "hi"},
+                "modelInvocationOutput": {},
+            },
+        }
+        trace = adapter.parse_trace_dict(trace_data, started_at=started_at)
+        assert trace.duration_ms >= 400
+
+    def test_without_started_at_duration_near_zero(
+        self, adapter: BedrockAdapter
+    ) -> None:
+        """Without started_at, duration should be near zero (just parse time)."""
+        trace = adapter.parse_invoke_agent_response([])
+        # Parse time should be well under 100ms
+        assert trace.duration_ms < 100
+
+
+class TestAutoTags:
+    def test_kb_lookup_tag(self) -> None:
+        acc = _make_acc()
+        acc.searches.append(
+            SearchRecord(query="test", engine="bedrock-kb:kb1", results_count=1)
+        )
+        tags = _derive_tags(acc)
+        assert "kb-lookup" in tags
+
+    def test_action_group_tag(self) -> None:
+        acc = _make_acc()
+        acc.tools.append(ToolRecord(name="MyAction"))
+        tags = _derive_tags(acc)
+        assert "action-group" in tags
+        assert "collaborator" not in tags
+
+    def test_collaborator_tag(self) -> None:
+        acc = _make_acc()
+        acc.tools.append(ToolRecord(name="collaborator:math-agent"))
+        tags = _derive_tags(acc)
+        assert "collaborator" in tags
+        # collaborator: prefix means no non-collaborator tools
+        assert "action-group" not in tags
+
+    def test_guardrail_tag(self) -> None:
+        acc = _make_acc()
+        acc.metadata["guardrail_action"] = "GUARDRAIL_INTERVENED"
+        tags = _derive_tags(acc)
+        assert "guardrail" in tags
+
+    def test_failure_tag(self) -> None:
+        acc = _make_acc()
+        acc.has_error = True
+        tags = _derive_tags(acc)
+        assert "failure" in tags
+
+    def test_no_tags_for_empty_acc(self) -> None:
+        acc = _make_acc()
+        tags = _derive_tags(acc)
+        assert tags == []
+
+    def test_auto_tags_merged_with_user_tags(self, adapter: BedrockAdapter) -> None:
+        events = _make_event_stream([{"failureTrace": {"failureReason": "timeout"}}])
+        trace = adapter.parse_invoke_agent_response(events, tags=["custom"])
+        assert "custom" in trace.tags
+        assert "failure" in trace.tags
+
+    def test_no_duplicate_tags(self, adapter: BedrockAdapter) -> None:
+        events = _make_event_stream([{"failureTrace": {"failureReason": "timeout"}}])
+        trace = adapter.parse_invoke_agent_response(events, tags=["failure"])
+        assert trace.tags.count("failure") == 1

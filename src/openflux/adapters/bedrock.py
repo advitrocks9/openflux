@@ -6,6 +6,7 @@ import importlib.util
 import json
 import threading
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from openflux._util import (
@@ -34,6 +35,9 @@ class _TraceAccumulator:
     session_id: str
     started_at: str = ""
     model: str = ""
+    task: str = ""
+    scope: str | None = None
+    tags: list[str] = field(default_factory=list)
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     tools: list[ToolRecord] = field(default_factory=list)
     searches: list[SearchRecord] = field(default_factory=list)
@@ -98,8 +102,10 @@ def _handle_orchestration(trace: dict[str, Any], acc: _TraceAccumulator) -> None
     if isinstance(rationale, dict) and rationale.get("text"):
         acc.metadata.setdefault("rationales", []).append(rationale["text"])
 
-    invocation = model_output.get("invocationInput", {})
-    observation = model_output.get("observation", {})
+    # invocationInput and observation are siblings at the orchestrationTrace level,
+    # not nested inside modelInvocationOutput
+    invocation = trace.get("invocationInput", {})
+    observation = trace.get("observation", {})
     obs_type = observation.get("type", "")
 
     ag_input = invocation.get("actionGroupInvocationInput", {})
@@ -224,6 +230,29 @@ def _process_trace_event(trace_data: dict[str, Any], acc: _TraceAccumulator) -> 
         _handle_guardrail(trace_data["guardrailTrace"], acc)
 
 
+def _parse_iso_ms(ts: str) -> datetime:
+    """Parse an ISO 8601 timestamp to datetime for duration computation."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _derive_tags(acc: _TraceAccumulator) -> list[str]:
+    """Auto-derive tags from accumulated trace state."""
+    tags: list[str] = []
+    if acc.searches:
+        tags.append("kb-lookup")
+    has_collaborator = any(t.name.startswith("collaborator:") for t in acc.tools)
+    has_action_group = any(not t.name.startswith("collaborator:") for t in acc.tools)
+    if has_action_group:
+        tags.append("action-group")
+    if has_collaborator:
+        tags.append("collaborator")
+    if "guardrail_action" in acc.metadata:
+        tags.append("guardrail")
+    if acc.has_error:
+        tags.append("failure")
+    return tags
+
+
 class BedrockAdapter:
     def __init__(
         self,
@@ -239,10 +268,32 @@ class BedrockAdapter:
         self,
         event_stream: Any,
         session_id: str | None = None,
+        task: str = "",
+        scope: str | None = None,
+        tags: list[str] | None = None,
+        started_at: str | None = None,
     ) -> Trace:
+        """Parse a Bedrock InvokeAgent response event stream into a Trace.
+
+        Args:
+            event_stream: Iterable of Bedrock event dicts from invoke_agent().
+            session_id: Session ID for trace continuity. Auto-generated if omitted.
+            task: The user's input text (inputText). Bedrock streams don't echo it
+                back, so the caller must provide it for the task field to be populated.
+            scope: Category/scope label. Not available from Bedrock natively —
+                caller must provide it.
+            tags: User-defined tags. Auto-derived tags (kb-lookup, action-group,
+                collaborator, guardrail, failure) are appended automatically.
+            started_at: ISO 8601 timestamp of when invoke_agent() was called.
+                Enables accurate duration_ms. If omitted, duration measures only
+                parse time (effectively 0).
+        """
         acc = _TraceAccumulator(
             session_id=session_id or generate_session_id(),
-            started_at=utc_now(),
+            started_at=started_at or utc_now(),
+            task=task,
+            scope=scope,
+            tags=list(tags) if tags else [],
         )
 
         for event in event_stream:
@@ -270,11 +321,32 @@ class BedrockAdapter:
         self,
         trace_data: dict[str, Any],
         session_id: str | None = None,
+        task: str = "",
+        scope: str | None = None,
+        tags: list[str] | None = None,
+        started_at: str | None = None,
     ) -> Trace:
-        """Parse a single trace dict, e.g. from CloudWatch logs."""
+        """Parse a single trace dict, e.g. from CloudWatch logs.
+
+        Args:
+            trace_data: A Bedrock trace dict containing one of the known trace
+                types (preProcessingTrace, orchestrationTrace, etc.).
+            session_id: Session ID for trace continuity. Auto-generated if omitted.
+            task: The user's input text. Bedrock traces don't include the original
+                query — caller must provide it.
+            scope: Category/scope label. Not available from Bedrock natively —
+                caller must provide it.
+            tags: User-defined tags. Auto-derived tags are appended automatically.
+            started_at: ISO 8601 timestamp of when the request was initiated.
+                Enables accurate duration_ms. If omitted, duration measures only
+                parse time (effectively 0).
+        """
         acc = _TraceAccumulator(
             session_id=session_id or generate_session_id(),
-            started_at=utc_now(),
+            started_at=started_at or utc_now(),
+            task=task,
+            scope=scope,
+            tags=list(tags) if tags else [],
         )
         _process_trace_event(trace_data, acc)
 
@@ -309,12 +381,26 @@ class BedrockAdapter:
         if acc.failure_reason:
             acc.metadata["failure_reason"] = acc.failure_reason
 
+        # Compute duration from started_at to now
+        duration_ms = 0
+        if acc.started_at:
+            start = _parse_iso_ms(acc.started_at)
+            end = datetime.now(UTC)
+            duration_ms = int((end - start).total_seconds() * 1000)
+
+        # Merge auto-derived tags with user-provided tags (dedup)
+        auto_tags = _derive_tags(acc)
+        all_tags = list(dict.fromkeys(acc.tags + auto_tags))
+
         return Trace(
             id=generate_trace_id(),
             timestamp=acc.started_at or utc_now(),
             agent=self._agent,
             session_id=acc.session_id,
             model=acc.model,
+            task=acc.task,
+            scope=acc.scope,
+            tags=all_tags,
             status=Status.ERROR if acc.has_error else Status.COMPLETED,
             decision=acc.decision,
             tools_used=acc.tools,
@@ -323,6 +409,7 @@ class BedrockAdapter:
             context=acc.context,
             token_usage=acc.token_usage,
             turn_count=len(acc.tools) + len(acc.searches),
+            duration_ms=duration_ms,
             metadata=acc.metadata,
         )
 
