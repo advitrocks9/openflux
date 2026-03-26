@@ -90,19 +90,21 @@ openflux install claude-code             # auto-configure hooks
 openflux install --list                  # show available adapters
 ```
 
-## Adapters
+## Adapter Status
 
-| Framework | Mechanism | Extra |
-|---|---|---|
-| Claude Code | Lifecycle hooks (subprocess) | (none, stdlib only) |
-| OpenAI Agents SDK | TracingProcessor | `openflux[openai]` |
-| LangChain / LangGraph | BaseCallbackHandler | `openflux[langchain]` |
-| Claude Agent SDK | HookMatcher / HookCallback | `openflux[claude-agent-sdk]` |
-| AutoGen v0.4 | Stream consumer | `openflux[autogen]` |
-| CrewAI | EventBus listener | `openflux[crewai]` |
-| Google ADK | Callbacks | `openflux[google-adk]` |
-| MCP | Tools + Resources | `openflux[mcp]` |
-| Amazon Bedrock | CloudWatch / X-Ray bridge | `openflux[bedrock]` |
+Verified end-to-end on 2026-03-25 against real SDKs. Full validation report: [docs/test-results/OVERALL-REPORT.md](docs/test-results/OVERALL-REPORT.md).
+
+| Adapter | Status | Coverage | Known Limitations | Install |
+|---------|--------|----------|-------------------|---------|
+| Claude Code | Working | 85% | No token_usage from hooks; task/decision require transcript parsing | `(stdlib)` |
+| OpenAI Agents SDK | Working | 73% | No system prompt capture; no source/file tracking | `openflux[openai]` |
+| LangChain | Working | 82% | Scope requires constructor arg; needs LangGraph for modern usage | `openflux[langchain]` |
+| Claude Agent SDK | Working | 85% | Needs manual `record_usage()` with ResultMessage data | `openflux[claude-agent-sdk]` |
+| AutoGen v0.4 | Working | 86% | Model name not in stream (pass to constructor); no file tracking | `openflux[autogen]` |
+| CrewAI | Working | 100% | Token usage estimated (chars/4); duplicate ToolRecord for native calls | `openflux[crewai]` |
+| Google ADK | Working | 86% | No correction tracking; cache_creation_tokens always 0 | `openflux[google-adk]` |
+| MCP | Working | 95% | No parent_id param; manual recording only | `openflux[mcp]` |
+| Amazon Bedrock | Working | 90% | Caller must provide task/scope via params | `openflux[bedrock]` |
 
 ## Configuration
 
