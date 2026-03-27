@@ -1,5 +1,6 @@
 """Acceptance test: Google ADK adapter with real Gemini API call."""
 
+import asyncio
 import os
 
 import pytest
@@ -17,18 +18,13 @@ def test_google_adk_full_telemetry(tmp_path):
     db_path = tmp_path / "traces.db"
     os.environ["OPENFLUX_DB_PATH"] = str(db_path)
 
-    from google.adk.agents import Agent
+    from google.adk.agents import LlmAgent
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
-    from google.genai import types
 
     from openflux.adapters.google_adk import create_adk_callbacks
 
-    callbacks = create_adk_callbacks(
-        agent="adk-research-bot",
-        search_tools={"search_web"},
-        source_tools={"read_file"},
-    )
+    callbacks = create_adk_callbacks(agent="adk-research-bot")
 
     def get_weather(city: str) -> dict:
         """Get current weather for a city."""
@@ -42,10 +38,10 @@ def test_google_adk_full_telemetry(tmp_path):
         """Read a file's contents."""
         return f"Contents of {filename}: config_version=2.0"
 
-    agent = Agent(
-        name="research-assistant",
+    agent = LlmAgent(
+        name="research_assistant",
         model="gemini-2.5-flash",
-        instruction="You are a helpful research assistant. Use your tools to complete tasks. Get weather first, then search, then read the config file.",
+        instruction="You are a helpful research assistant. Use your tools. Get weather first, then search, then read the config file. Be concise.",
         tools=[get_weather, search_web, read_file],
         before_model_callback=callbacks.before_model,
         after_model_callback=callbacks.after_model,
@@ -54,50 +50,38 @@ def test_google_adk_full_telemetry(tmp_path):
     )
 
     session_service = InMemorySessionService()
-    runner = Runner(agent=agent, app_name="test-app", session_service=session_service)
+    runner = Runner(agent=agent, app_name="test_app", session_service=session_service)
 
-    session = session_service.create_session(
-        app_name="test-app", user_id="test-user"
-    )
+    async def create_session():
+        return await session_service.create_session(
+            app_name="test_app", user_id="test_user"
+        )
+
+    session = asyncio.run(create_session())
+
+    from google.genai import types
 
     user_msg = types.Content(
         role="user",
-        parts=[types.Part(text="Get weather in London, search for Gemini AI features, and read config.yaml")],
+        parts=[types.Part(text="Get weather in London, search for Gemini AI features, and read config.yaml. Be concise.")],
     )
-
-    # Consume all events from the generator
     events = list(runner.run(
-        user_id="test-user",
+        user_id="test_user",
         session_id=session.id,
         new_message=user_msg,
     ))
-
     assert len(events) > 0
 
-    # Flush the adapter to finalize the trace
     traces = callbacks._adapter.flush()
     assert len(traces) >= 1
 
-    from tests.acceptance.conftest import check_trace
+    from helpers import check_trace
 
     required = [
-        "id",
-        "timestamp",
-        "agent",
-        "session_id",
-        "model",
-        "task",
-        "decision",
-        "status",
-        "scope",
-        "tags",
-        "context",
-        "tools_used",
-        "token_usage",
-        "duration_ms",
-        "turn_count",
-        "metadata",
-        "schema_version",
+        "id", "timestamp", "agent", "session_id", "model",
+        "task", "decision", "status", "scope", "tags", "context",
+        "tools_used", "token_usage", "duration_ms", "turn_count",
+        "metadata", "schema_version",
     ]
     na = ["parent_id", "correction", "files_modified"]
 
