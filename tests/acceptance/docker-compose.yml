@@ -1,0 +1,64 @@
+services:
+  # === Free adapters (no API keys needed) ===
+
+  mcp:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/mcp/Dockerfile
+    profiles: [free, all]
+
+  bedrock:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/bedrock/Dockerfile
+    profiles: [free, all]
+
+  claude-code:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/claude-code/Dockerfile
+    profiles: [free, all]
+
+  # === API-key adapters ===
+
+  openai:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/openai/Dockerfile
+    env_file: .env
+    profiles: [api, all]
+
+  langchain:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/langchain/Dockerfile
+    env_file: .env
+    profiles: [api, all]
+
+  claude-agent-sdk:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/claude-agent-sdk/Dockerfile
+    env_file: .env
+    profiles: [api, all]
+
+  autogen:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/autogen/Dockerfile
+    env_file: .env
+    profiles: [api, all]
+
+  crewai:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/crewai/Dockerfile
+    env_file: .env
+    profiles: [api, all]
+
+  google-adk:
+    build:
+      context: ../..
+      dockerfile: tests/acceptance/google-adk/Dockerfile
+    env_file: .env
+    profiles: [api, all]

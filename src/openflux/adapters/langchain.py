@@ -76,6 +76,11 @@ _GENERIC_SCOPE_NAMES: set[str] = {
 def _extract_last_human_message(messages: list[Any]) -> str:
     """Find the last human message content from a LangGraph messages list."""
     for msg in reversed(messages):
+        # Handle tuples like ("human", "message text")
+        if isinstance(msg, tuple) and len(msg) >= 2:
+            if msg[0] == "human":
+                return str(msg[1])[:2000]
+            continue
         msg_type = getattr(msg, "type", None)
         # Messages can be dicts (serialized) or objects
         if msg_type is None and isinstance(msg, dict):
@@ -597,7 +602,8 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         acc = self._get_or_create_run(run_id, parent_run_id)
-        name = (serialized or {}).get("name", "")
+        ser = serialized if isinstance(serialized, dict) else {}
+        name = ser.get("name", "")
         # Skip generic framework names that don't convey useful scope
         is_useful_name = name and name not in _GENERIC_SCOPE_NAMES
 
@@ -618,13 +624,17 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                 if tag and tag not in acc.tags:
                     acc.tags.append(str(tag))
 
-        if parent_run_id is None and isinstance(inputs, dict) and not acc.task:
-            inp = inputs.get("input", inputs.get("question", ""))
-            if inp:
-                acc.task = str(inp)[:2000]
-            # LangGraph passes {"messages": [HumanMessage(...)]} instead
-            elif "messages" in inputs:
-                acc.task = _extract_last_human_message(inputs["messages"])
+        if parent_run_id is None and not acc.task:
+            if isinstance(inputs, dict):
+                inp = inputs.get("input", inputs.get("question", ""))
+                if inp:
+                    acc.task = str(inp)[:2000]
+                # LangGraph passes {"messages": [HumanMessage(...)]} instead
+                elif "messages" in inputs:
+                    acc.task = _extract_last_human_message(inputs["messages"])
+            elif isinstance(inputs, list):
+                # LangGraph may pass a list of message tuples directly
+                acc.task = _extract_last_human_message(inputs)
 
     def on_chain_end(
         self,
@@ -675,15 +685,28 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
     @staticmethod
     def _extract_path_from_input(tool_input: str) -> str:
         """Best-effort extraction of a file path from tool input."""
+        _PATH_KEYS = ("file_path", "path", "filename", "file", "name")
         # Try JSON first (common for structured tool calls)
         try:
             data = json.loads(tool_input)
             if isinstance(data, dict):
-                for key in ("file_path", "path", "filename", "file", "name"):
+                for key in _PATH_KEYS:
                     val = data.get(key)
                     if val and isinstance(val, str):
                         return val
         except (json.JSONDecodeError, TypeError):
+            pass
+        # LangGraph often passes Python repr strings (single quotes)
+        import ast
+
+        try:
+            data = ast.literal_eval(tool_input)
+            if isinstance(data, dict):
+                for key in _PATH_KEYS:
+                    val = data.get(key)
+                    if val and isinstance(val, str):
+                        return val
+        except (ValueError, SyntaxError):
             pass
         # Fall back to raw string if it looks like a path
         stripped = tool_input.strip()

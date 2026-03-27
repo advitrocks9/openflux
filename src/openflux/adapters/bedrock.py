@@ -44,6 +44,8 @@ class _TraceAccumulator:
     context: list[ContextRecord] = field(default_factory=list)
     sources: list[SourceRecord] = field(default_factory=list)
     decision: str = ""
+    correction: str | None = None
+    parent_id: str | None = None
     has_error: bool = False
     failure_reason: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -132,6 +134,10 @@ def _handle_orchestration(trace: dict[str, Any], acc: _TraceAccumulator) -> None
                 timestamp=utc_now(),
             )
         )
+
+        # REPROMPT indicates the agent had to self-correct
+        if obs_type == "REPROMPT" and output_str:
+            acc.correction = f"REPROMPT on {tool_name}: {output_str[:300]}"
 
     kb_input = invocation.get("knowledgeBaseLookupInput", {})
     if isinstance(kb_input, dict) and kb_input.get("text"):
@@ -272,6 +278,7 @@ class BedrockAdapter:
         scope: str | None = None,
         tags: list[str] | None = None,
         started_at: str | None = None,
+        parent_id: str | None = None,
     ) -> Trace:
         """Parse a Bedrock InvokeAgent response event stream into a Trace.
 
@@ -287,6 +294,7 @@ class BedrockAdapter:
             started_at: ISO 8601 timestamp of when invoke_agent() was called.
                 Enables accurate duration_ms. If omitted, duration measures only
                 parse time (effectively 0).
+            parent_id: Parent trace ID for sub-agent or multi-step workflows.
         """
         acc = _TraceAccumulator(
             session_id=session_id or generate_session_id(),
@@ -294,6 +302,7 @@ class BedrockAdapter:
             task=task,
             scope=scope,
             tags=list(tags) if tags else [],
+            parent_id=parent_id,
         )
 
         for event in event_stream:
@@ -325,6 +334,7 @@ class BedrockAdapter:
         scope: str | None = None,
         tags: list[str] | None = None,
         started_at: str | None = None,
+        parent_id: str | None = None,
     ) -> Trace:
         """Parse a single trace dict, e.g. from CloudWatch logs.
 
@@ -340,6 +350,7 @@ class BedrockAdapter:
             started_at: ISO 8601 timestamp of when the request was initiated.
                 Enables accurate duration_ms. If omitted, duration measures only
                 parse time (effectively 0).
+            parent_id: Parent trace ID for sub-agent or multi-step workflows.
         """
         acc = _TraceAccumulator(
             session_id=session_id or generate_session_id(),
@@ -347,6 +358,7 @@ class BedrockAdapter:
             task=task,
             scope=scope,
             tags=list(tags) if tags else [],
+            parent_id=parent_id,
         )
         _process_trace_event(trace_data, acc)
 
@@ -381,12 +393,12 @@ class BedrockAdapter:
         if acc.failure_reason:
             acc.metadata["failure_reason"] = acc.failure_reason
 
-        # Compute duration from started_at to now
+        # Compute duration from started_at to now (minimum 1ms when started_at provided)
         duration_ms = 0
         if acc.started_at:
             start = _parse_iso_ms(acc.started_at)
             end = datetime.now(UTC)
-            duration_ms = int((end - start).total_seconds() * 1000)
+            duration_ms = max(1, int((end - start).total_seconds() * 1000))
 
         # Merge auto-derived tags with user-provided tags (dedup)
         auto_tags = _derive_tags(acc)
@@ -397,12 +409,14 @@ class BedrockAdapter:
             timestamp=acc.started_at or utc_now(),
             agent=self._agent,
             session_id=acc.session_id,
+            parent_id=acc.parent_id,
             model=acc.model,
             task=acc.task,
             scope=acc.scope,
             tags=all_tags,
             status=Status.ERROR if acc.has_error else Status.COMPLETED,
             decision=acc.decision,
+            correction=acc.correction,
             tools_used=acc.tools,
             searches=acc.searches,
             sources_read=acc.sources,

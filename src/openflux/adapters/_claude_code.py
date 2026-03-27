@@ -674,7 +674,8 @@ def _apply_fallback_data(
         try:
             start = datetime.fromisoformat(meta.started_at.replace("Z", "+00:00"))
             now = datetime.now(UTC)
-            trace.duration_ms = int((now - start).total_seconds() * 1000)
+            ms = int((now - start).total_seconds() * 1000)
+            trace.duration_ms = max(ms, 1)  # a session with events took >0ms
         except ValueError:
             pass
 

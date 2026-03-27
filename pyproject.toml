@@ -26,8 +26,13 @@ classifiers = [
 openai = ["openai-agents>=0.1"]
 langchain = ["langchain-core>=0.1"]
 claude-agent-sdk = ["claude-agent-sdk>=0.1"]
-autogen = ["autogen-agentchat>=0.4.2"]
-crewai = ["crewai>=0.80"]
+autogen = [
+    "autogen-agentchat>=0.4",
+    "autogen-ext[openai]>=0.4",
+]
+crewai = [
+    "crewai[tools]>=0.80",
+]
 google-adk = ["google-adk>=0.1"]
 mcp = ["mcp>=1.0"]
 bedrock = ["boto3>=1.28"]
@@ -54,9 +59,11 @@ Repository = "https://github.com/advitrocks9/openflux"
 packages = ["src/openflux"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/unit", "tests/acceptance"]
+pythonpath = [".", "tests/unit", "tests/acceptance"]
 markers = [
     "integration: tests that hit I/O (SQLite, network, filesystem)",
+    "acceptance: end-to-end acceptance tests requiring real API keys",
 ]
 
 [dependency-groups]

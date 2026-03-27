@@ -7,9 +7,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
 
-from openflux._util import generate_trace_id, utc_now
+from openflux._util import content_hash, generate_trace_id, utc_now
 from openflux.schema import (
+    ContextRecord,
+    ContextType,
     SearchRecord,
+    SourceRecord,
+    SourceType,
     Status,
     TokenUsage,
     ToolRecord,
@@ -33,6 +37,23 @@ _DEFAULT_SEARCH_TOOLS: set[str] = {
     "google_search",
 }
 
+_DEFAULT_FILE_READ_TOOLS: set[str] = {
+    "read_file",
+    "file_reader",
+    "load_file",
+    "read_document",
+    "file_search",
+}
+
+_DEFAULT_FILE_WRITE_TOOLS: set[str] = {
+    "write_file",
+    "file_writer",
+    "save_file",
+    "create_file",
+    "edit_file",
+    "append_file",
+}
+
 
 @dataclass(slots=True)
 class _TraceAccumulator:
@@ -48,9 +69,13 @@ class _TraceAccumulator:
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     tools: list[ToolRecord] = field(default_factory=lambda: list[ToolRecord]())
     searches: list[SearchRecord] = field(default_factory=lambda: list[SearchRecord]())
+    sources: list[SourceRecord] = field(default_factory=lambda: list[SourceRecord]())
+    context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
+    files_modified: list[str] = field(default_factory=lambda: list[str]())
     tags: list[str] = field(default_factory=lambda: list[str]())
     metadata: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
     has_error: bool = False
+    seen_context_hashes: set[str] = field(default_factory=lambda: set[str]())
 
 
 def _estimate_results_count(raw_output: Any) -> int:
@@ -88,11 +113,17 @@ class OpenFluxProcessor(TracingProcessor):
         self,
         agent: str = "openai-agent",
         search_tools: set[str] | None = None,
+        file_read_tools: set[str] | None = None,
+        file_write_tools: set[str] | None = None,
         on_trace: Any | None = None,
+        parent_id: str | None = None,
     ) -> None:
         self._agent = agent
         self._search_tools = search_tools or _DEFAULT_SEARCH_TOOLS
+        self._file_read_tools = file_read_tools or _DEFAULT_FILE_READ_TOOLS
+        self._file_write_tools = file_write_tools or _DEFAULT_FILE_WRITE_TOOLS
         self._on_trace = on_trace
+        self._parent_id = parent_id
         self._lock = threading.Lock()
         self._traces: dict[str, _TraceAccumulator] = {}
         self._completed: list[Trace] = []
@@ -217,6 +248,7 @@ class OpenFluxProcessor(TracingProcessor):
             acc.model = model
         self._accumulate_usage(span_data, acc)
         self._capture_decision(span_data, acc)
+        self._capture_context_from_generation(span_data, acc)
 
     def _accumulate_usage(self, span_data: Any, acc: _TraceAccumulator) -> None:
         raw_usage = getattr(span_data, "usage", None)
@@ -244,6 +276,34 @@ class OpenFluxProcessor(TracingProcessor):
                     acc.last_generation_output = str(content)[:2048]
                     return
 
+    def _capture_context_from_generation(
+        self, span_data: Any, acc: _TraceAccumulator
+    ) -> None:
+        """Extract system prompts from generation input as context records."""
+        raw_input = getattr(span_data, "input", None)
+        if not raw_input or not isinstance(raw_input, (list, tuple)):
+            return
+        for msg in raw_input:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "system":
+                text = str(msg.get("content", ""))
+                if text:
+                    h = content_hash(text)
+                    if h in acc.seen_context_hashes:
+                        continue
+                    acc.seen_context_hashes.add(h)
+                    acc.context.append(
+                        ContextRecord(
+                            type=ContextType.SYSTEM_PROMPT,
+                            source="generation",
+                            content_hash=h,
+                            content=text[:4096],
+                            bytes=len(text.encode("utf-8")),
+                            timestamp=utc_now(),
+                        )
+                    )
+
     def _handle_function_span(
         self, span: Any, span_data: Any, acc: _TraceAccumulator
     ) -> None:
@@ -256,7 +316,9 @@ class OpenFluxProcessor(TracingProcessor):
         if isinstance(raw_output, dict):
             raw_output = json.dumps(raw_output, default=str)
 
-        if name.lower() in self._search_tools:
+        name_lower = name.lower()
+
+        if name_lower in self._search_tools:
             acc.searches.append(
                 SearchRecord(
                     query=str(raw_input)[:500] if raw_input else "",
@@ -281,6 +343,45 @@ class OpenFluxProcessor(TracingProcessor):
                     timestamp=utc_now(),
                 )
             )
+
+        # Classify file reads as sources
+        if name_lower in self._file_read_tools:
+            path = self._extract_path_from_input(str(raw_input))
+            output_str = str(raw_output) if raw_output else ""
+            acc.sources.append(
+                SourceRecord(
+                    type=SourceType.FILE,
+                    path=path,
+                    content_hash=content_hash(output_str) if output_str else "",
+                    content=output_str[:4096],
+                    tool=name,
+                    bytes_read=len(output_str.encode("utf-8")) if output_str else 0,
+                    timestamp=utc_now(),
+                )
+            )
+
+        # Classify file writes as files_modified
+        if name_lower in self._file_write_tools:
+            path = self._extract_path_from_input(str(raw_input))
+            if path and path not in acc.files_modified:
+                acc.files_modified.append(path)
+
+    @staticmethod
+    def _extract_path_from_input(tool_input: str) -> str:
+        """Best-effort extraction of a file path from tool input."""
+        try:
+            data = json.loads(tool_input)
+            if isinstance(data, dict):
+                for key in ("file_path", "path", "filename", "file", "name"):
+                    val = data.get(key)
+                    if val and isinstance(val, str):
+                        return val
+        except (json.JSONDecodeError, TypeError):
+            pass
+        stripped = tool_input.strip()
+        if "/" in stripped or stripped.startswith("."):
+            return stripped[:500]
+        return ""
 
     def _handle_handoff_span(self, span_data: Any, acc: _TraceAccumulator) -> None:
         handoffs: list[dict[str, str]] = acc.metadata.setdefault("handoffs", [])
@@ -309,14 +410,18 @@ class OpenFluxProcessor(TracingProcessor):
             timestamp=acc.started_at or utc_now(),
             agent=self._agent,
             session_id=acc.trace_id,
+            parent_id=self._parent_id,
             model=acc.model,
             task=acc.task,
             decision=acc.last_generation_output,
             status=Status.ERROR if acc.has_error else Status.COMPLETED,
             scope=scope,
             tags=acc.tags,
+            context=acc.context,
             tools_used=acc.tools,
             searches=acc.searches,
+            sources_read=acc.sources,
+            files_modified=acc.files_modified,
             token_usage=acc.token_usage,
             turn_count=acc.generation_count,
             duration_ms=duration_ms,

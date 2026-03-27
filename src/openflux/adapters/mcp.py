@@ -190,7 +190,7 @@ class MCPServerAdapter:
                 files_modified=files_modified or [],
                 correction=correction or None,
                 duration_ms=duration_ms,
-                metadata=metadata or {},
+                metadata=metadata if metadata else {"source": "mcp"},
                 token_usage=_build_token_usage(
                     input_tokens,
                     output_tokens,
