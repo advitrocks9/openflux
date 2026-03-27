@@ -231,13 +231,12 @@ class ClaudeAgentSDKAdapter:
         tool_name = input_data.get("tool_name", "")
         tool_input = input_data.get("tool_input", {})
 
-        # Issue 2: branch on error flag for correct field lookup
+        # Error responses use "error" key, success uses "tool_response"
         if error:
             raw_output = input_data.get("error", "")
             output_str = str(raw_output) if raw_output else ""
         else:
             raw_output = input_data.get("tool_response", "")
-            # Issue 1: json.dumps for dict outputs instead of str()
             output_str = (
                 json.dumps(raw_output, default=str)
                 if isinstance(raw_output, dict)
@@ -253,7 +252,7 @@ class ClaudeAgentSDKAdapter:
         )
         timestamp = utc_now()
 
-        # Issue 7: compute duration from PreToolUse start time
+        # Duration = PreToolUse start → PostToolUse end
         tuid = input_data.get("tool_use_id", "")
         start = self._tool_start_times.pop(tuid, None) if tuid else None
         duration_ms = int((time.monotonic() - start) * 1000) if start else 0
@@ -272,7 +271,6 @@ class ClaudeAgentSDKAdapter:
             acc.cwd = input_data.get("cwd", acc.cwd)
             acc.tools.append(record)
 
-            # Issue 3: count errors instead of permanent flag
             if error:
                 acc.tool_errors_count += 1
 
@@ -373,15 +371,13 @@ class ClaudeAgentSDKAdapter:
             metadata["environment"] = {"cwd": acc.cwd}
         if acc.subagents:
             metadata["subagents"] = acc.subagents
-        # Issue 3: store tool error count in metadata for observability
         if acc.tool_errors_count:
             metadata["tool_errors_count"] = acc.tool_errors_count
 
-        # Issue 3: use explicit status if set, otherwise default to COMPLETED
-        # Tool failures alone don't mark the trace as ERROR
+        # Tool failures alone don't mark the trace as ERROR — only explicit status does
         status = acc.status if acc.status is not None else Status.COMPLETED
 
-        # Issue 6: attach system prompt as ContextRecord if provided
+        # Attach system prompt so context field is populated
         context = list(acc.context)
         if self._system_prompt:
             context.append(

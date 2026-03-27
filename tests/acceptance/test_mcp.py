@@ -28,6 +28,9 @@ class TestMCPUserWorkflow:
                     "agent": "security-scanner",
                     "model": "gpt-4o",
                     "status": "completed",
+                    "parent_id": "trc-parent-abc123",
+                    "correction": "Model initially suggested SHA-256, corrected to bcrypt",
+                    "turn_count": 3,
                     "scope": "security-audit",
                     "tags": ["security", "auth", "critical"],
                     "files_modified": ["src/auth.py", "src/middleware.py"],
@@ -79,10 +82,12 @@ class TestMCPUserWorkflow:
                 "timestamp",
                 "agent",
                 "session_id",
+                "parent_id",
                 "model",
                 "task",
                 "decision",
                 "status",
+                "correction",
                 "scope",
                 "tags",
                 "context",
@@ -90,6 +95,7 @@ class TestMCPUserWorkflow:
                 "sources_read",
                 "tools_used",
                 "files_modified",
+                "turn_count",
                 "token_usage",
                 "duration_ms",
                 "metadata",
@@ -97,7 +103,18 @@ class TestMCPUserWorkflow:
             ],
             na=[],
         )
-        assert coverage >= 85
+        assert coverage >= 95
+
+        assert trace.agent == "security-scanner"
+        assert trace.parent_id == "trc-parent-abc123"
+        assert (
+            trace.correction == "Model initially suggested SHA-256, corrected to bcrypt"
+        )
+        assert trace.turn_count == 3
+        assert len(trace.tools_used) == 1
+        assert len(trace.searches) == 1
+        assert len(trace.context) == 1
+        assert len(trace.sources_read) == 1
 
     def test_search_finds_trace(self, db_path):
         from openflux.adapters.mcp import MCPServerAdapter

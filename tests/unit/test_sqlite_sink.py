@@ -240,3 +240,117 @@ class TestExportJson:
 
     def test_export_empty(self, sink: SQLiteSink) -> None:
         assert sink.export_json() == []
+
+
+@pytest.mark.integration
+class TestAll22FieldsRoundtrip:
+    """Write a Trace with ALL 22 fields populated → SQLite → read back → compare."""
+
+    def test_every_field_survives_roundtrip(self, sink: SQLiteSink) -> None:
+        original = make_trace(
+            agent="roundtrip-agent",
+            parent_id="trc-parent-abc123",
+            model="claude-sonnet-4-20250514",
+            task="Implement OAuth2 PKCE flow",
+            decision="Added PKCE to auth module, all tests pass",
+            status="completed",
+            correction="Initially used implicit flow, switched to PKCE",
+            scope="auth-service",
+            tags=["security", "auth", "pkce"],
+            context=[
+                make_context_record(
+                    type=ContextType.SYSTEM_PROMPT,
+                    source="system.md",
+                    content="You are a security-focused developer.",
+                )
+            ],
+            searches=[
+                make_search_record(
+                    query="OAuth2 PKCE best practices",
+                    engine="web_search",
+                    results_count=7,
+                )
+            ],
+            sources_read=[
+                make_source_record(
+                    path="/src/auth/oauth.py",
+                    content="class OAuthHandler: ...",
+                    tool="Read",
+                )
+            ],
+            tools_used=[
+                make_tool_record(
+                    name="Bash",
+                    tool_input="pytest tests/ -v",
+                    tool_output="12 passed",
+                    duration_ms=3400,
+                )
+            ],
+            files_modified=["/src/auth/oauth.py", "/tests/test_oauth.py"],
+            turn_count=5,
+            token_usage=TokenUsage(
+                input_tokens=15000,
+                output_tokens=3200,
+                cache_read_tokens=5000,
+                cache_creation_tokens=1200,
+            ),
+            duration_ms=45000,
+            metadata={"environment": "ci", "commit": "abc123"},
+        )
+
+        sink.write(original)
+        loaded = sink.get(original.id)
+        assert loaded is not None
+
+        # Scalar fields
+        assert loaded.id == original.id
+        assert loaded.timestamp == original.timestamp
+        assert loaded.agent == "roundtrip-agent"
+        assert loaded.session_id == original.session_id
+        assert loaded.parent_id == "trc-parent-abc123"
+        assert loaded.model == "claude-sonnet-4-20250514"
+        assert loaded.task == "Implement OAuth2 PKCE flow"
+        assert loaded.decision == "Added PKCE to auth module, all tests pass"
+        assert loaded.status == "completed"
+        assert loaded.correction == "Initially used implicit flow, switched to PKCE"
+        assert loaded.scope == "auth-service"
+        assert loaded.schema_version == original.schema_version
+        assert loaded.turn_count == 5
+        assert loaded.duration_ms == 45000
+
+        # List fields
+        assert loaded.tags == ["security", "auth", "pkce"]
+        assert loaded.files_modified == [
+            "/src/auth/oauth.py",
+            "/tests/test_oauth.py",
+        ]
+
+        # Token usage
+        assert loaded.token_usage is not None
+        assert loaded.token_usage.input_tokens == 15000
+        assert loaded.token_usage.output_tokens == 3200
+        assert loaded.token_usage.cache_read_tokens == 5000
+        assert loaded.token_usage.cache_creation_tokens == 1200
+
+        # Nested records
+        assert len(loaded.context) == 1
+        assert loaded.context[0].type == ContextType.SYSTEM_PROMPT
+        assert loaded.context[0].source == "system.md"
+        assert "security-focused" in loaded.context[0].content
+
+        assert len(loaded.searches) == 1
+        assert loaded.searches[0].query == "OAuth2 PKCE best practices"
+        assert loaded.searches[0].engine == "web_search"
+        assert loaded.searches[0].results_count == 7
+
+        assert len(loaded.sources_read) == 1
+        assert loaded.sources_read[0].path == "/src/auth/oauth.py"
+        assert loaded.sources_read[0].tool == "Read"
+
+        assert len(loaded.tools_used) == 1
+        assert loaded.tools_used[0].name == "Bash"
+        assert loaded.tools_used[0].duration_ms == 3400
+        assert loaded.tools_used[0].tool_output == "12 passed"
+
+        # Metadata
+        assert loaded.metadata == {"environment": "ci", "commit": "abc123"}

@@ -96,13 +96,15 @@ def test_google_adk_full_telemetry(tmp_path):
         "tags",
         "context",
         "tools_used",
+        "sources_read",
         "token_usage",
         "duration_ms",
         "turn_count",
         "metadata",
         "schema_version",
     ]
-    na = ["parent_id", "correction", "files_modified"]
+    # searches depends on model calling search_web — non-deterministic
+    na = ["parent_id", "correction", "files_modified", "searches"]
 
     trace, coverage = check_trace(db_path, required=required, na=na)
     assert coverage >= 80

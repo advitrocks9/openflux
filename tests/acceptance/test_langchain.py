@@ -28,6 +28,7 @@ def test_langchain_gemini_full_telemetry(tmp_path):
         search_tools={"search_web"},
         file_read_tools={"read_file"},
         file_write_tools={"write_file"},
+        scope="acceptance-test",
     )
 
     @tool
@@ -69,7 +70,7 @@ def test_langchain_gemini_full_telemetry(tmp_path):
                 )
             ]
         },
-        config={"callbacks": [handler]},
+        config={"callbacks": [handler], "tags": ["test", "acceptance"]},
     )
 
     assert result is not None
@@ -95,6 +96,8 @@ def test_langchain_gemini_full_telemetry(tmp_path):
         "duration_ms",
         "metadata",
         "schema_version",
+        "scope",
+        "tags",
     ]
     na = ["parent_id", "correction"]
 

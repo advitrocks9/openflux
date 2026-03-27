@@ -6,7 +6,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,8 @@ from openflux._util import (
     utc_now,
 )
 from openflux.schema import (
+    ContextRecord,
+    ContextType,
     FidelityMode,
     SearchRecord,
     SourceRecord,
@@ -62,6 +64,7 @@ class TranscriptData:
     duration_ms: int = 0
     scope: str | None = None
     correction: str | None = None
+    context: list[ContextRecord] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -653,6 +656,8 @@ def _apply_transcript_data(
         trace.correction = td.correction
     if td.scope:
         trace.scope = td.scope
+    if td.context:
+        trace.context.extend(td.context)
     # Prefer transcript turn_count (user entries), fall back to tool events
     trace.turn_count = td.turn_count if td.turn_count > 0 else tool_event_count
     # Prefer transcript duration (first→last timestamp), more accurate
@@ -783,6 +788,21 @@ def _parse_transcript(path: Path) -> TranscriptData:
                     # Keep updating — we want the last one
                     data.decision = truncate_content(text, _DECISION_MAX)
 
+            # System messages carry context (system prompts, reminders)
+            if entry_type == "system" or msg.get("role") == "system":
+                text = _extract_user_text(msg) if msg else ""
+                if text:
+                    data.context.append(
+                        ContextRecord(
+                            type=ContextType.SYSTEM_PROMPT,
+                            source="transcript",
+                            content_hash=content_hash(text),
+                            content=text[:4096],
+                            bytes=len(text.encode("utf-8")),
+                            timestamp=ts,
+                        )
+                    )
+
     # Duration from first→last transcript timestamp
     data.duration_ms = _timestamp_delta_ms(first_timestamp, last_timestamp)
 
@@ -845,7 +865,7 @@ def _write_to_sinks(trace: Trace) -> None:
 class ClaudeCodeAdapter:
     @staticmethod
     def hook_config() -> dict[str, Any]:
-        base = "python3 -m openflux.adapters._claude_code"
+        base = f"{sys.executable} -m openflux.adapters._claude_code"
         return {
             "hooks": {
                 "SessionStart": [

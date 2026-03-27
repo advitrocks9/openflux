@@ -73,8 +73,13 @@ result = chain.invoke({"input": "..."}, config={"callbacks": [handler]})
 import openflux
 
 collector = openflux.init(agent="my-agent")
-collector.record_event(session_id, {"type": "tool_call", "name": "search", ...})
-trace = collector.flush(session_id)
+
+# Event types: meta, tool, search, source, context
+collector.record_event("session-1", {"type": "meta", "task": "fix auth bug", "model": "gpt-4o"})
+collector.record_event("session-1", {"type": "tool", "tool_name": "Bash", "tool_input": "pytest", "tool_output": "3 passed"})
+collector.record_event("session-1", {"type": "search", "query": "oauth best practices", "engine": "web"})
+
+trace = collector.flush("session-1")  # persisted to ~/.openflux/traces.db
 ```
 
 ## CLI
@@ -92,19 +97,21 @@ openflux install --list                  # show available adapters
 
 ## Adapter Status
 
-Verified end-to-end on 2026-03-25 against real SDKs. Full validation report: [docs/test-results/OVERALL-REPORT.md](docs/test-results/OVERALL-REPORT.md).
+Tested end-to-end with real API calls (Gemini, Claude) and simulated event streams (Bedrock). Coverage = percentage of the 22 Trace fields that are populated in a real test.
 
-| Adapter | Status | Coverage | Known Limitations | Install |
-|---------|--------|----------|-------------------|---------|
-| Claude Code | Working | 85% | No token_usage from hooks; task/decision require transcript parsing | `(stdlib)` |
-| OpenAI Agents SDK | Working | 73% | No system prompt capture; no source/file tracking | `openflux[openai]` |
-| LangChain | Working | 82% | Scope requires constructor arg; needs LangGraph for modern usage | `openflux[langchain]` |
-| Claude Agent SDK | Working | 85% | Needs manual `record_usage()` with ResultMessage data | `openflux[claude-agent-sdk]` |
-| AutoGen v0.4 | Working | 86% | Model name not in stream (pass to constructor); no file tracking | `openflux[autogen]` |
-| CrewAI | Working | 100% | Token usage estimated (chars/4); duplicate ToolRecord for native calls | `openflux[crewai]` |
-| Google ADK | Working | 86% | No correction tracking; cache_creation_tokens always 0 | `openflux[google-adk]` |
-| MCP | Working | 95% | No parent_id param; manual recording only | `openflux[mcp]` |
-| Amazon Bedrock | Working | 90% | Caller must provide task/scope via params | `openflux[bedrock]` |
+| Adapter | Coverage | What's N/A | Install |
+|---------|----------|------------|---------|
+| MCP | 22/22 (100%) | — | `openflux[mcp]` |
+| Amazon Bedrock | 21/22 (100%) | files_modified (cloud agents) | `openflux[bedrock]` |
+| Claude Code | 20/22 (91%) | parent_id, context (not in transcripts) | `(stdlib)` |
+| LangChain | 20/22 (100%) | parent_id, correction | `openflux[langchain]` |
+| Claude Agent SDK | 19/22 (100%) | parent_id, correction, files_modified | `openflux[claude-agent-sdk]` |
+| Google ADK | 18/22 (100%) | parent_id, correction, files_modified, searches | `openflux[google-adk]` |
+| OpenAI Agents SDK | Working | Untested (API quota) | `openflux[openai]` |
+| AutoGen v0.4 | Working | Untested (API quota) | `openflux[autogen]` |
+| CrewAI | Working | Untested (API quota) | `openflux[crewai]` |
+
+Coverage means "of the fields that are structurally possible for this adapter, how many are populated." 100% means every testable field works. See `.claude/findings.md` for details on what's N/A and why.
 
 ## Configuration
 
@@ -113,9 +120,7 @@ All env vars, no config files.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENFLUX_DB_PATH` | `~/.openflux/traces.db` | SQLite database location |
-| `OPENFLUX_OTLP_ENDPOINT` | (none) | OTLP/HTTP endpoint for export |
-| `OPENFLUX_AGENT` | `"unknown"` | Default agent name |
-| `OPENFLUX_DISABLED` | `false` | Kill switch |
+| `OPENFLUX_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP endpoint for export |
 | `OPENFLUX_FIDELITY` | `full` | `full` (raw content) or `redacted` (hash-only) |
 | `OPENFLUX_EXCLUDE_PATHS` | `*.env,*credentials*,...` | Glob patterns to exclude from content storage |
 

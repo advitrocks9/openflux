@@ -407,7 +407,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         root = self._find_root_run(run_id) or self._get_or_create_run(
             run_id, parent_run_id
         )
-        # Pop per-tool-run state (Issue 5: correct duration with concurrent tools)
+        # Per-tool-run state avoids clobbering when concurrent tools overlap
         key = str(run_id)
         pending = self._pending_tools.pop(key, None)
         tool_name = pending[0] if pending else ""
@@ -416,7 +416,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         tool_mono = pending[3] if pending else 0.0
         tool_duration = int((time.monotonic() - tool_mono) * 1000) if tool_mono else 0
 
-        # Issue 4: LangGraph passes ToolMessage objects, not plain strings
+        # LangGraph passes ToolMessage objects, need .content for the string
         raw_output = str(getattr(output, "content", output))
         tool_output = raw_output[:16384]
 

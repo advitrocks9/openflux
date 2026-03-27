@@ -190,8 +190,10 @@ class TestClaudeCodeHookWorkflow:
                 "duration_ms",
                 "metadata",
                 "schema_version",
+                "searches",
+                "turn_count",
             ],
-            na=["parent_id", "correction"],
+            na=["parent_id", "correction", "context"],
         )
 
         # Verify specific field contents
@@ -212,7 +214,11 @@ class TestClaudeCodeTranscriptParsing:
     """Test transcript parsing with a synthetic JSONL file."""
 
     def _make_transcript(self, path: Path):
-        """Build a synthetic Claude Code JSONL transcript."""
+        """Build a synthetic Claude Code JSONL transcript.
+
+        Mirrors real transcript structure: agent-setting, user, assistant entries.
+        System prompts are NOT in real transcripts (injected at API level).
+        """
         t0 = datetime(2025, 1, 15, 10, 0, 0, tzinfo=UTC)
         entries = [
             # First user message → task
@@ -328,6 +334,8 @@ class TestClaudeCodeTranscriptParsing:
         assert "feature/auth" in td.scope
         assert td.correction is not None
         assert "correction" in td.correction.lower()
+        # System prompts aren't recorded in real Claude Code transcripts
+        assert td.context == []
 
     def test_transcript_integration_with_hooks(self, db_path, openflux_dir):
         """Full flow: hooks collect tool data, transcript provides session-level fields."""
@@ -348,7 +356,7 @@ class TestClaudeCodeTranscriptParsing:
             openflux_dir,
         )
 
-        # A few tool calls
+        # Tool calls covering every classification path
         _simulate_hook(
             handle_post_tool_use,
             {
@@ -356,6 +364,28 @@ class TestClaudeCodeTranscriptParsing:
                 "tool_name": "Read",
                 "tool_input": {"file_path": "src/auth.py"},
                 "tool_response": "auth code here",
+            },
+            openflux_dir,
+        )
+
+        _simulate_hook(
+            handle_post_tool_use,
+            {
+                "session_id": session_id,
+                "tool_name": "Grep",
+                "tool_input": {"pattern": "bcrypt"},
+                "tool_response": "src/auth.py:3: import bcrypt",
+            },
+            openflux_dir,
+        )
+
+        _simulate_hook(
+            handle_post_tool_use,
+            {
+                "session_id": session_id,
+                "tool_name": "Bash",
+                "tool_input": {"command": "pytest tests/ -q"},
+                "tool_response": "15 passed",
             },
             openflux_dir,
         )
@@ -395,6 +425,8 @@ class TestClaudeCodeTranscriptParsing:
                 "model",
                 "status",
                 "sources_read",
+                "tools_used",
+                "searches",
                 "files_modified",
                 "tags",
                 "metadata",
@@ -404,11 +436,12 @@ class TestClaudeCodeTranscriptParsing:
                 "token_usage",
                 "turn_count",
                 "scope",
+                "correction",
             ],
-            na=["parent_id"],
+            # context: system prompts aren't in real transcripts
+            na=["parent_id", "context"],
         )
 
-        # Transcript-derived fields
         assert "Fix the authentication" in trace.task
         assert "tests passing" in trace.decision
         assert trace.token_usage is not None
@@ -416,3 +449,59 @@ class TestClaudeCodeTranscriptParsing:
         assert trace.turn_count == 3
         assert trace.scope is not None
         assert trace.correction is not None
+
+
+class TestRealTranscript:
+    """Parse a real Claude Code transcript from this machine — no fakes."""
+
+    @staticmethod
+    def _find_real_transcript() -> Path | None:
+        """Find a completed transcript with at least one assistant response."""
+        projects_dir = Path.home() / ".claude" / "projects"
+        if not projects_dir.exists():
+            return None
+        # Walk all project dirs for any .jsonl with assistant entries
+        for project in projects_dir.iterdir():
+            if not project.is_dir():
+                continue
+            for jsonl in sorted(
+                project.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True
+            ):
+                has_user = False
+                has_assistant = False
+                with jsonl.open("r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if entry.get("type") == "user":
+                            has_user = True
+                        if entry.get("type") == "assistant":
+                            has_assistant = True
+                        if has_user and has_assistant:
+                            return jsonl
+        return None
+
+    def test_real_transcript_parsing(self):
+        """Parse a real transcript and verify structural fields are extracted."""
+        path = self._find_real_transcript()
+        if path is None:
+            pytest.skip("No real Claude Code transcripts found on this machine")
+
+        td = _parse_transcript(path)
+
+        # A real transcript must have these — they come from the JSONL structure
+        assert td.task, f"task should be non-empty from {path.name}"
+        assert td.decision, f"decision should be non-empty from {path.name}"
+        assert td.model, f"model should be non-empty from {path.name}"
+        assert td.turn_count > 0, f"turn_count should be >0 from {path.name}"
+        assert td.token_usage is not None, f"token_usage should exist from {path.name}"
+        assert td.token_usage.input_tokens > 0
+        assert td.token_usage.output_tokens > 0
+        assert td.duration_ms >= 0
+        # Context is structurally empty — system prompts aren't in transcripts
+        assert td.context == []

@@ -6,6 +6,10 @@ from typing import Any, Self
 
 SCHEMA_VERSION = "0.2.0"
 
+_ALWAYS_PRESENT_FIELDS: frozenset[str] = frozenset(
+    {"id", "timestamp", "agent", "session_id", "status", "schema_version"}
+)
+
 
 class Status(StrEnum):
     COMPLETED = "completed"
@@ -112,7 +116,12 @@ class Trace:
     schema_version: str = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        return {k: v for k, v in asdict(self).items() if v is not None}
+        """Serialize to dict, omitting None values and empty defaults."""
+        return {
+            k: v
+            for k, v in asdict(self).items()
+            if v is not None and (v or k in _ALWAYS_PRESENT_FIELDS)
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:

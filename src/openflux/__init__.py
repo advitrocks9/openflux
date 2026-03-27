@@ -46,6 +46,10 @@ def init(
     sinks: list[Sink] | None = None,
     fidelity: FidelityMode | None = None,
 ) -> TraceCollector:
+    if sinks is None:
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sinks = [SQLiteSink()]
     return TraceCollector(sinks=sinks, agent=agent, fidelity=fidelity)
 
 

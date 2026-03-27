@@ -87,8 +87,12 @@ def _trace_to_summary(trace: Trace) -> dict[str, Any]:
         }
     if trace.duration_ms:
         d["duration_ms"] = trace.duration_ms
+    if trace.parent_id:
+        d["parent_id"] = trace.parent_id
     if trace.correction:
         d["correction"] = trace.correction
+    if trace.turn_count:
+        d["turn_count"] = trace.turn_count
     return d
 
 
@@ -135,6 +139,7 @@ class MCPServerAdapter:
             duration_ms: int = 0,
             metadata: dict[str, Any] | None = None,
             session_id: str = "",
+            parent_id: str = "",
             input_tokens: int = 0,
             output_tokens: int = 0,
             cache_read_tokens: int = 0,
@@ -160,6 +165,7 @@ class MCPServerAdapter:
                 duration_ms: How long the action took.
                 metadata: Arbitrary key-value pairs.
                 session_id: Session to associate with (auto-generated if empty).
+                parent_id: Parent trace ID for linking sub-traces.
                 input_tokens: LLM input tokens consumed.
                 output_tokens: LLM output tokens generated.
                 cache_read_tokens: Tokens read from prompt cache.
@@ -179,6 +185,7 @@ class MCPServerAdapter:
                 timestamp=utc_now(),
                 agent=agent or self._agent,
                 session_id=session_id or generate_session_id(),
+                parent_id=parent_id or None,
                 model=model,
                 task=task,
                 decision=decision,

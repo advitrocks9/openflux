@@ -134,7 +134,7 @@ class OpenFluxCrewListener(BaseEventListener):
 
         @crewai_event_bus.on(CrewKickoffCompletedEvent)
         def _on_crew_completed(source: Any, event: Any) -> None:
-            # Capture crew-level total_tokens if available (Issue 1)
+            # Backfill token usage from crew-level totals when per-task data is missing
             total = getattr(event, "total_tokens", 0) or 0
             if total > 0:
                 with self._lock:
@@ -245,8 +245,7 @@ class OpenFluxCrewListener(BaseEventListener):
                     usage = response.get("usage")
             self._accumulate_tokens(acc, usage)
 
-            # Fallback: estimate tokens from message/response text when
-            # SDK provides no usage data (Issue 1)
+            # Fallback: estimate tokens from text when SDK provides no usage data
             if usage is None:
                 messages = getattr(event, "messages", None)
                 response = getattr(event, "response", None)
@@ -266,7 +265,7 @@ class OpenFluxCrewListener(BaseEventListener):
             call_type_name = getattr(call_type, "value", str(call_type or ""))
 
             # Only record LLM text responses as sources — tool-call
-            # responses are captured via ToolRecord instead (Issue 4)
+            # responses are captured via ToolRecord instead
             is_tool_call = call_type_name in ("tool_call", "TOOL_CALL")
             if response and not is_tool_call and isinstance(response, str):
                 text = response[:4096]
@@ -282,8 +281,7 @@ class OpenFluxCrewListener(BaseEventListener):
                     )
                 )
 
-            # Extract synthetic tool records from native tool calls
-            # (Issue 2: tools_used empty in native mode)
+            # Synthetic ToolRecords from native LLM tool calls
             if is_tool_call and response:
                 self._extract_native_tool_calls(acc, response)
 

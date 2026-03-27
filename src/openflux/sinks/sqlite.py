@@ -156,8 +156,9 @@ class SQLiteSink(Sink):
     def __init__(self, path: Path | str | None = None) -> None:
         self._path = Path(path) if path else _DEFAULT_DB_PATH
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path))
+        self._conn = sqlite3.connect(str(self._path), timeout=10)
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
 
