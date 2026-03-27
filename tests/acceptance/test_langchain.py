@@ -19,7 +19,6 @@ def test_langchain_gemini_full_telemetry(tmp_path):
 
     from langchain_core.tools import tool
     from langchain_google_genai import ChatGoogleGenerativeAI
-
     from langgraph.prebuilt import create_react_agent
 
     from openflux.adapters.langchain import OpenFluxCallbackHandler
