@@ -20,10 +20,7 @@ def test_langchain_gemini_full_telemetry(tmp_path):
     from langchain_core.tools import tool
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    try:
-        from langchain.agents import create_agent as create_react_agent
-    except ImportError:
-        from langgraph.prebuilt import create_react_agent
+    from langgraph.prebuilt import create_react_agent
 
     from openflux.adapters.langchain import OpenFluxCallbackHandler
 
@@ -61,7 +58,7 @@ def test_langchain_gemini_full_telemetry(tmp_path):
     agent = create_react_agent(
         model=llm,
         tools=[calculator, search_web, read_file, write_file],
-        prompt="You are a helpful assistant. Use tools to answer questions. Search first, read data.txt, compute 6*7, then write result to output.txt.",
+        prompt="You are a helpful assistant. Use tools. Search first, read data.txt, compute 6*7, write result to output.txt.",
     )
 
     result = agent.invoke(
