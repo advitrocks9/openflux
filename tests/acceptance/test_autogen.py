@@ -4,7 +4,6 @@ User story: "Multi-agent AutoGen team. I want to see what happened."
 """
 
 import os
-import uuid
 
 import pytest
 
@@ -13,11 +12,31 @@ from tests.acceptance.helpers import check_trace
 pytestmark = [pytest.mark.acceptance, pytest.mark.asyncio]
 
 REQUIRED = [
-    "id", "timestamp", "agent", "session_id", "model", "task", "decision",
-    "status", "scope", "tags", "context", "turn_count", "token_usage",
-    "duration_ms", "metadata", "schema_version",
+    "id",
+    "timestamp",
+    "agent",
+    "session_id",
+    "model",
+    "task",
+    "decision",
+    "status",
+    "scope",
+    "tags",
+    "context",
+    "turn_count",
+    "token_usage",
+    "duration_ms",
+    "metadata",
+    "schema_version",
 ]
-NA = ["parent_id", "correction", "searches", "sources_read", "tools_used", "files_modified"]
+NA = [
+    "parent_id",
+    "correction",
+    "searches",
+    "sources_read",
+    "tools_used",
+    "files_modified",
+]
 
 
 @pytest.fixture()
@@ -64,11 +83,13 @@ async def test_autogen_multi_agent_team(db_path):
 
     client = OpenAIChatCompletionClient(model="gpt-4o-mini", api_key=api_key)
     researcher = AssistantAgent(
-        "researcher", model_client=client,
+        "researcher",
+        model_client=client,
         system_message="Research briefly. One sentence.",
     )
     writer = AssistantAgent(
-        "writer", model_client=client,
+        "writer",
+        model_client=client,
         system_message="Summarize briefly. Say TERMINATE when done.",
     )
     team = RoundRobinGroupChat(

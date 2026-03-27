@@ -82,6 +82,7 @@ select = ["E", "W", "F", "I", "UP", "B", "SIM", "N", "ANN", "C4", "PTH"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
+"tests/acceptance/**" = ["ANN", "E501"]
 "src/openflux/adapters/**" = ["ANN401"]
 
 [tool.pyright]

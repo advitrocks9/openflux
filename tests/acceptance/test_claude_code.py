@@ -11,20 +11,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from helpers import check_trace
 
-from openflux._util import generate_session_id, utc_now
+from openflux._util import generate_session_id
 from openflux.adapters._claude_code import (
-    SessionMeta,
-    _build_trace,
     _parse_transcript,
     handle_post_tool_use,
     handle_post_tool_use_failure,
     handle_session_end,
     handle_session_start,
 )
-from openflux.sinks.sqlite import SQLiteSink
-
-from helpers import check_trace
 
 
 @pytest.fixture()

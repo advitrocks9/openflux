@@ -5,6 +5,7 @@ User story: "Claude Agent SDK with Bash, Read, Glob tools."
 
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -13,9 +14,24 @@ from tests.acceptance.helpers import check_trace
 pytestmark = [pytest.mark.acceptance, pytest.mark.asyncio]
 
 REQUIRED = [
-    "id", "timestamp", "agent", "session_id", "model", "task", "decision",
-    "status", "scope", "tags", "context", "searches", "sources_read",
-    "tools_used", "turn_count", "token_usage", "duration_ms", "metadata",
+    "id",
+    "timestamp",
+    "agent",
+    "session_id",
+    "model",
+    "task",
+    "decision",
+    "status",
+    "scope",
+    "tags",
+    "context",
+    "searches",
+    "sources_read",
+    "tools_used",
+    "turn_count",
+    "token_usage",
+    "duration_ms",
+    "metadata",
     "schema_version",
 ]
 NA = ["parent_id", "correction", "files_modified"]
@@ -63,8 +79,11 @@ async def test_claude_agent_sdk_with_tools(db_path):
 
     # Create a temp .py file so there's something to find and read
     with tempfile.NamedTemporaryFile(
-        suffix=".py", prefix="openflux_test_", dir="/tmp",
-        mode="w", delete=False,
+        suffix=".py",
+        prefix="openflux_test_",
+        dir="/tmp",
+        mode="w",
+        delete=False,
     ) as f:
         f.write("# OpenFlux test file\ndef hello():\n    return 'world'\n")
         test_file = f.name
@@ -85,15 +104,16 @@ async def test_claude_agent_sdk_with_tools(db_path):
                 result_msg = msg
     except Exception as e:
         err_str = str(e).lower()
-        if "429" in str(e) or "rate" in err_str or "quota" in err_str or "credit" in err_str:
+        if (
+            "429" in str(e)
+            or "rate" in err_str
+            or "quota" in err_str
+            or "credit" in err_str
+        ):
             pytest.skip(f"API quota exceeded: {e}")
         raise
     finally:
-        # Clean up temp file
-        try:
-            os.unlink(test_file)
-        except OSError:
-            pass
+        Path(test_file).unlink(missing_ok=True)
 
     # Feed ResultMessage data back to adapter for late-binding
     if result_msg:

@@ -63,13 +63,19 @@ def test_google_adk_full_telemetry(tmp_path):
 
     user_msg = types.Content(
         role="user",
-        parts=[types.Part(text="Get weather in London, search for Gemini AI features, and read config.yaml. Be concise.")],
+        parts=[
+            types.Part(
+                text="Get weather in London, search for Gemini AI features, and read config.yaml. Be concise."
+            )
+        ],
     )
-    events = list(runner.run(
-        user_id="test_user",
-        session_id=session.id,
-        new_message=user_msg,
-    ))
+    events = list(
+        runner.run(
+            user_id="test_user",
+            session_id=session.id,
+            new_message=user_msg,
+        )
+    )
     assert len(events) > 0
 
     traces = callbacks._adapter.flush()
@@ -78,10 +84,23 @@ def test_google_adk_full_telemetry(tmp_path):
     from helpers import check_trace
 
     required = [
-        "id", "timestamp", "agent", "session_id", "model",
-        "task", "decision", "status", "scope", "tags", "context",
-        "tools_used", "token_usage", "duration_ms", "turn_count",
-        "metadata", "schema_version",
+        "id",
+        "timestamp",
+        "agent",
+        "session_id",
+        "model",
+        "task",
+        "decision",
+        "status",
+        "scope",
+        "tags",
+        "context",
+        "tools_used",
+        "token_usage",
+        "duration_ms",
+        "turn_count",
+        "metadata",
+        "schema_version",
     ]
     na = ["parent_id", "correction", "files_modified"]
 

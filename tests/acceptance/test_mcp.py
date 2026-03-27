@@ -3,8 +3,6 @@
 import asyncio
 
 import pytest
-from pathlib import Path
-
 from helpers import check_trace
 
 
@@ -108,9 +106,7 @@ class TestMCPUserWorkflow:
             adapter = MCPServerAdapter(agent="test", db_path=str(db_path))
             server = adapter.server
             await server.call_tool("trace_record", {"task": "Find authentication bugs"})
-            result = await server.call_tool(
-                "trace_search", {"query": "authentication"}
-            )
+            result = await server.call_tool("trace_search", {"query": "authentication"})
             return result
 
         result = asyncio.run(run())

@@ -12,9 +12,23 @@ from tests.acceptance.helpers import check_trace
 pytestmark = [pytest.mark.acceptance]
 
 REQUIRED = [
-    "id", "timestamp", "agent", "session_id", "model", "task", "decision",
-    "status", "scope", "tags", "context", "tools_used", "turn_count",
-    "token_usage", "duration_ms", "metadata", "schema_version",
+    "id",
+    "timestamp",
+    "agent",
+    "session_id",
+    "model",
+    "task",
+    "decision",
+    "status",
+    "scope",
+    "tags",
+    "context",
+    "tools_used",
+    "turn_count",
+    "token_usage",
+    "duration_ms",
+    "metadata",
+    "schema_version",
 ]
 NA = ["parent_id", "correction", "files_modified"]
 

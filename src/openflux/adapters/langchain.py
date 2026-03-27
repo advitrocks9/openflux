@@ -685,12 +685,12 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
     @staticmethod
     def _extract_path_from_input(tool_input: str) -> str:
         """Best-effort extraction of a file path from tool input."""
-        _PATH_KEYS = ("file_path", "path", "filename", "file", "name")
+        path_keys = ("file_path", "path", "filename", "file", "name")
         # Try JSON first (common for structured tool calls)
         try:
             data = json.loads(tool_input)
             if isinstance(data, dict):
-                for key in _PATH_KEYS:
+                for key in path_keys:
                     val = data.get(key)
                     if val and isinstance(val, str):
                         return val
@@ -702,7 +702,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         try:
             data = ast.literal_eval(tool_input)
             if isinstance(data, dict):
-                for key in _PATH_KEYS:
+                for key in path_keys:
                     val = data.get(key)
                     if val and isinstance(val, str):
                         return val

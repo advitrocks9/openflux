@@ -1,13 +1,11 @@
 """Bedrock acceptance test — simulated event streams, exactly how a real user feeds boto3 data."""
 
 import pytest
-from pathlib import Path
+from helpers import check_trace
 
 from openflux._util import utc_now
 from openflux.adapters.bedrock import BedrockAdapter
 from openflux.sinks.sqlite import SQLiteSink
-
-from helpers import check_trace
 
 
 @pytest.fixture()
@@ -75,7 +73,9 @@ def _make_full_event_stream():
                             "knowledgeBaseLookupOutput": {
                                 "retrievedReferences": [
                                     {
-                                        "content": {"text": "OAuth 2.0 PKCE flow is recommended for public clients."},
+                                        "content": {
+                                            "text": "OAuth 2.0 PKCE flow is recommended for public clients."
+                                        },
                                         "location": {
                                             "s3Location": {
                                                 "uri": "s3://docs-bucket/auth-guide.pdf"
@@ -83,7 +83,9 @@ def _make_full_event_stream():
                                         },
                                     },
                                     {
-                                        "content": {"text": "Session tokens should be rotated every 15 minutes."},
+                                        "content": {
+                                            "text": "Session tokens should be rotated every 15 minutes."
+                                        },
                                         "location": {
                                             "s3Location": {
                                                 "uri": "s3://docs-bucket/security-policy.pdf"
@@ -321,9 +323,7 @@ class TestBedrockUserWorkflow:
                         "foundationModel": "anthropic.claude-3-haiku-20240307-v1:0",
                     },
                     "modelInvocationOutput": {
-                        "metadata": {
-                            "usage": {"inputTokens": 100, "outputTokens": 50}
-                        },
+                        "metadata": {"usage": {"inputTokens": 100, "outputTokens": 50}},
                         "rationale": {"text": "Looking up data"},
                     },
                     "invocationInput": {

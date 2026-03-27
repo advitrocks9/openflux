@@ -65,7 +65,14 @@ def test_langchain_gemini_full_telemetry(tmp_path):
     )
 
     result = agent.invoke(
-        {"messages": [("human", "Search for Python info, read data.txt, compute 6*7, write the result to output.txt")]},
+        {
+            "messages": [
+                (
+                    "human",
+                    "Search for Python info, read data.txt, compute 6*7, write the result to output.txt",
+                )
+            ]
+        },
         config={"callbacks": [handler]},
     )
 
