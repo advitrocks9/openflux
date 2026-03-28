@@ -43,7 +43,19 @@ export function useTraces(params: UseTracesParams = {}): UseTracesResult {
         sort,
         order,
       });
-      setTraces(res.traces);
+      setTraces(
+        res.traces.map((t) => ({
+          ...t,
+          tags: t.tags ?? [],
+          context: t.context ?? [],
+          searches: t.searches ?? [],
+          sources_read: t.sources_read ?? [],
+          tools_used: t.tools_used ?? [],
+          files_modified: t.files_modified ?? [],
+          token_usage: t.token_usage ?? null,
+          metadata: t.metadata ?? {},
+        })),
+      );
       setTotal(res.total);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch traces");

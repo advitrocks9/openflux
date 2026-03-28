@@ -82,7 +82,7 @@ function TokenTooltip({ active, payload, label }: CustomTooltipProps) {
 function TraceTooltip({ active, payload, label }: CustomTooltipProps) {
   if (!active || !payload?.length || !label) return null;
 
-  const count = payload.find((p) => p.dataKey === "count")?.value ?? 0;
+  const count = payload.find((p) => p.dataKey === "traces")?.value ?? 0;
 
   return (
     <div className="bg-surface border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
@@ -172,7 +172,7 @@ export function StatsView({ stats, timeline, loading }: StatsViewProps) {
                 vertical={false}
               />
               <XAxis
-                dataKey="day"
+                dataKey="date"
                 tickFormatter={formatDay}
                 tick={{ fontSize: 11, fill: "oklch(0.6 0 0)" }}
                 axisLine={false}
@@ -217,7 +217,7 @@ export function StatsView({ stats, timeline, loading }: StatsViewProps) {
                 vertical={false}
               />
               <XAxis
-                dataKey="day"
+                dataKey="date"
                 tickFormatter={formatDay}
                 tick={{ fontSize: 11, fill: "oklch(0.6 0 0)" }}
                 axisLine={false}
@@ -231,7 +231,7 @@ export function StatsView({ stats, timeline, loading }: StatsViewProps) {
                 allowDecimals={false}
               />
               <Tooltip content={<TraceTooltip />} cursor={{ fill: "oklch(0 0 0 / 0.03)" }} />
-              <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="traces" fill="#6366f1" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

@@ -1,5 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Layout } from "./components/Layout";
+import { TraceTable } from "./components/TraceTable";
+import { TraceDetail } from "./components/TraceDetail";
+import { FilterBar } from "./components/FilterBar";
+import { StatsView } from "./components/StatsView";
+import { CommandPalette } from "./components/CommandPalette";
+import { useTraces } from "./hooks/useTraces";
+import { useTrace } from "./hooks/useTrace";
+import { useStats } from "./hooks/useStats";
+import { useKeyboard } from "./hooks/useKeyboard";
 
 type View = "traces" | "stats";
 
@@ -7,14 +16,53 @@ function getViewFromHash(): View {
   return window.location.hash === "#stats" ? "stats" : "traces";
 }
 
+const PAGE_SIZE = 50;
+
 export function App() {
   const [view, setView] = useState<View>(getViewFromHash);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [isDark, setIsDark] = useState(
     () => document.body.classList.contains("dark"),
   );
+  const [cmdkOpen, setCmdkOpen] = useState(false);
 
-  // Sync hash -> view
+  // Filter state
+  const [statusFilter, setStatusFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sort, setSort] = useState("timestamp");
+  const [order, setOrder] = useState<"asc" | "desc">("desc");
+
+  // Data hooks
+  const {
+    traces,
+    total,
+    loading: tracesLoading,
+    page,
+    setPage,
+  } = useTraces({
+    limit: PAGE_SIZE,
+    status: statusFilter,
+    agent: agentFilter,
+    search: searchQuery,
+    sort,
+    order,
+  });
+
+  const {
+    trace: selectedTrace,
+    loading: traceLoading,
+  } = useTrace(selectedTraceId);
+
+  const { stats, timeline, loading: statsLoading } = useStats();
+
+  // Unique agent names for filter dropdown
+  const agents = useMemo(() => {
+    const set = new Set(traces.map((t) => t.agent));
+    return Array.from(set).sort();
+  }, [traces]);
+
+  // Hash routing
   useEffect(() => {
     function onHashChange() {
       setView(getViewFromHash());
@@ -37,35 +85,96 @@ export function App() {
     });
   }, []);
 
+  const handleSort = useCallback(
+    (column: string, newOrder: "asc" | "desc") => {
+      setSort(column);
+      setOrder(newOrder);
+    },
+    [],
+  );
+
+  const handleCloseDetail = useCallback(() => {
+    setSelectedTraceId(null);
+  }, []);
+
+  // Keyboard shortcuts
+  useKeyboard({
+    Escape: handleCloseDetail,
+    "Meta+k": () => setCmdkOpen(true),
+  });
+
   return (
-    <Layout
-      view={view}
-      onViewChange={handleViewChange}
-      onToggleDark={handleToggleDark}
-      isDark={isDark}
-    >
-      {view === "traces" ? (
-        <div className="flex h-full">
-          <div className={selectedTraceId ? "w-1/2" : "w-full"}>
-            {/* TraceTable will go here */}
-            <div className="p-4 text-secondary text-sm">
-              Traces view — TraceTable pending
-            </div>
-          </div>
-          {selectedTraceId && (
-            <div className="w-1/2 border-l border-border overflow-y-auto">
-              {/* TraceDetail will go here */}
-              <div className="p-4 text-secondary text-sm">
-                Detail: {selectedTraceId}
+    <>
+      <Layout
+        view={view}
+        onViewChange={handleViewChange}
+        onToggleDark={handleToggleDark}
+        isDark={isDark}
+      >
+        {view === "traces" ? (
+          <div className="flex h-full overflow-hidden">
+            <div
+              className={`flex flex-col ${selectedTraceId ? "flex-1 min-w-0" : "w-full"} transition-all duration-200`}
+            >
+              <FilterBar
+                status={statusFilter}
+                agent={agentFilter}
+                search={searchQuery}
+                agents={agents}
+                onStatusChange={setStatusFilter}
+                onAgentChange={setAgentFilter}
+                onSearchChange={setSearchQuery}
+              />
+              <div className="flex-1 overflow-auto">
+                <TraceTable
+                  traces={traces}
+                  loading={tracesLoading}
+                  total={total}
+                  page={page}
+                  pageSize={PAGE_SIZE}
+                  selectedId={selectedTraceId}
+                  onSelect={setSelectedTraceId}
+                  onPageChange={setPage}
+                  onSort={handleSort}
+                  sort={sort}
+                  order={order}
+                />
               </div>
             </div>
-          )}
-        </div>
-      ) : (
-        <div className="p-4 text-secondary text-sm">
-          Stats view — StatsView pending
-        </div>
-      )}
-    </Layout>
+            {selectedTraceId && (
+              <div className="w-[480px] flex-shrink-0 border-l border-border overflow-hidden">
+                <TraceDetail
+                  trace={selectedTrace}
+                  loading={traceLoading}
+                  onClose={handleCloseDetail}
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="overflow-auto h-full">
+            <StatsView
+              stats={stats}
+              timeline={timeline}
+              loading={statsLoading}
+            />
+          </div>
+        )}
+      </Layout>
+      <CommandPalette
+        open={cmdkOpen}
+        onOpenChange={setCmdkOpen}
+        traces={traces.slice(0, 5)}
+        onSelectTrace={(id) => {
+          setSelectedTraceId(id);
+          handleViewChange("traces");
+          setCmdkOpen(false);
+        }}
+        onNavigate={(v) => {
+          handleViewChange(v);
+          setCmdkOpen(false);
+        }}
+      />
+    </>
   );
 }

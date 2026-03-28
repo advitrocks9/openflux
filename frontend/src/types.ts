@@ -74,8 +74,8 @@ export interface StatsResponse {
 }
 
 export interface TimelineEntry {
-  day: string;
-  count: number;
+  date: string;
+  traces: number;
   input_tokens: number;
   output_tokens: number;
 }
