@@ -1,5 +1,7 @@
 # OpenFlux
 
+[![PyPI](https://img.shields.io/pypi/v/openflux)](https://pypi.org/project/openflux/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/openflux)](https://pypi.org/project/openflux/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
