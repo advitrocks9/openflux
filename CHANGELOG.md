@@ -25,5 +25,4 @@ Initial release.
 
 ### Known limitations
 - OpenAI Agents, AutoGen, CrewAI adapters built but not yet E2E tested (API quota)
-- No web UI (CLI only)
 - SQLite storage only for local use; OTLP for export to external systems

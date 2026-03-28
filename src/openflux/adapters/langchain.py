@@ -56,6 +56,7 @@ _DEFAULT_SEARCH_TOOLS: set[str] = {
     "searx_search",
 }
 
+
 @dataclass(slots=True)
 class _RunAccumulator:
     run_id: str
@@ -64,19 +65,18 @@ class _RunAccumulator:
     started_at_mono: float = 0.0
     model: str = ""
     token_usage: TokenUsage = field(default_factory=TokenUsage)
-    tools: list[ToolRecord] = field(default_factory=lambda: list[ToolRecord]())
-    searches: list[SearchRecord] = field(default_factory=lambda: list[SearchRecord]())
-    sources: list[SourceRecord] = field(default_factory=lambda: list[SourceRecord]())
-    context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
-    files_modified: list[str] = field(default_factory=lambda: list[str]())
-    tags: list[str] = field(default_factory=lambda: list[str]())
+    tools: list[ToolRecord] = field(default_factory=list)
+    searches: list[SearchRecord] = field(default_factory=list)
+    sources: list[SourceRecord] = field(default_factory=list)
+    context: list[ContextRecord] = field(default_factory=list)
+    files_modified: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     scope: str | None = None
     task: str = ""
     decision: str = ""
-    metadata: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
+    metadata: dict[str, Any] = field(default_factory=dict)
     has_error: bool = False
-    # Dedup set for context records to avoid duplicate system_prompt entries
-    seen_context_hashes: set[str] = field(default_factory=lambda: set[str]())
+    seen_context_hashes: set[str] = field(default_factory=set)
     # Pending tool state carried between on_tool_start and on_tool_end
     pending_tool_name: str = ""
     pending_tool_input: str = ""
@@ -91,12 +91,16 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         agent: str = "langchain-agent",
         on_trace: Callable[[Trace], None] | None = None,
         search_tools: set[str] | None = None,
+        file_read_tools: set[str] | None = None,
+        file_write_tools: set[str] | None = None,
         scope: str | None = None,
     ) -> None:
         super().__init__()
         self._agent = agent
         self._on_trace = on_trace
         self._search_tools = search_tools or _DEFAULT_SEARCH_TOOLS
+        # file_read_tools and file_write_tools accepted for API compat
+        _ = file_read_tools, file_write_tools
         self._default_scope = scope
         self._lock = threading.Lock()
         self._runs: dict[str, _RunAccumulator] = {}

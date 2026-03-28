@@ -78,15 +78,15 @@ class _TraceAccumulator:
     last_generation_output: str = ""
     generation_count: int = 0
     token_usage: TokenUsage = field(default_factory=TokenUsage)
-    tools: list[ToolRecord] = field(default_factory=lambda: list[ToolRecord]())
-    searches: list[SearchRecord] = field(default_factory=lambda: list[SearchRecord]())
-    sources: list[SourceRecord] = field(default_factory=lambda: list[SourceRecord]())
-    context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
-    files_modified: list[str] = field(default_factory=lambda: list[str]())
-    tags: list[str] = field(default_factory=lambda: list[str]())
-    metadata: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
+    tools: list[ToolRecord] = field(default_factory=list)
+    searches: list[SearchRecord] = field(default_factory=list)
+    sources: list[SourceRecord] = field(default_factory=list)
+    context: list[ContextRecord] = field(default_factory=list)
+    files_modified: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     has_error: bool = False
-    seen_context_hashes: set[str] = field(default_factory=lambda: set[str]())
+    seen_context_hashes: set[str] = field(default_factory=set)
 
 
 def _estimate_results_count(raw_output: Any) -> int:

@@ -21,22 +21,25 @@ This writes lifecycle hooks into `~/.claude/settings.json`. From that point, eve
 | Field | Source |
 |---|---|
 | id, timestamp, agent, session_id | Auto-generated / session metadata |
-| model | Session start metadata |
+| model | Transcript parsing (assistant message model field) |
 | status | Error detection from tool failures |
-| task | (Derived from transcript if available) |
-| decision | (Derived from transcript if available) |
+| task | First user message from transcript |
+| decision | Last assistant message from transcript |
 | correction | Regex pattern matching on transcript for user corrections |
-| context | (System prompts from transcript parsing) |
+| scope | Project name / git branch from transcript |
+| tags | Auto-derived from tool usage patterns (code-edit, web-research, etc.) |
+| context | System prompts from transcript parsing |
 | searches | WebSearch queries, Grep/Glob pattern searches |
 | sources_read | File reads (Read), URL fetches (WebFetch), search result files |
 | tools_used | Bash commands and unclassified tool calls |
 | files_modified | Paths from Write and Edit tool calls |
-| turn_count | Number of tool calls |
-| duration_ms | Calculated from session start to end |
+| turn_count | User message count from transcript, or tool event count |
+| token_usage | Accumulated from transcript assistant message usage data |
+| duration_ms | Calculated from first to last transcript timestamp |
 | metadata | `environment.cwd`, `environment.permission_mode` |
 | schema_version | Always set |
 
-**N/A fields:** `parent_id` (no parent trace concept), `scope` (no grouping signal), `tags` (no tagging mechanism), `token_usage` (not exposed by Claude Code hooks).
+**N/A fields:** `parent_id` (no parent trace concept in Claude Code hooks).
 
 ---
 
@@ -85,17 +88,25 @@ processor = OpenFluxProcessor(agent="my-agent", on_trace=on_trace)
 | Field | Source |
 |---|---|
 | id, timestamp, agent, session_id | Auto-generated / SDK trace ID |
+| parent_id | Constructor `parent_id` parameter |
 | model | GenerationSpanData |
+| task | (Requires user-set accumulator task) |
+| decision | Last assistant message from GenerationSpanData output |
 | status | Error spans set `Status.ERROR` |
-| context | Agent instructions (system prompt) from AgentSpanData |
+| scope | Agent name from AgentSpanData |
+| tags | Passed through from accumulator |
+| context | System prompts from GenerationSpanData input messages |
 | searches | Function calls matching `search_tools` set |
+| sources_read | Function calls matching `file_read_tools` set |
 | tools_used | FunctionSpanData (name, input, output, duration, error) |
-| turn_count | Number of tool calls |
+| files_modified | Function calls matching `file_write_tools` set |
+| turn_count | Generation count (number of LLM calls) |
 | token_usage | GenerationSpanData usage (input + output tokens) |
-| metadata | Handoff data, guardrail triggers |
+| duration_ms | Computed from first span start to last span end |
+| metadata | Handoff data, guardrail triggers, output_type |
 | schema_version | Always set |
 
-**N/A fields:** `parent_id`, `correction`, `scope`, `tags`, `sources_read`, `files_modified`, `duration_ms` (span-level only), `task`, `decision`.
+**N/A fields:** `correction` (no correction signal in SDK spans).
 
 ---
 
@@ -138,16 +149,17 @@ traces = handler.completed_traces
 | decision | Agent finish output or chain end output |
 | status | Chain/tool errors set `Status.ERROR` |
 | scope | Chain name from serialized data |
-| context | RAG chunks from retriever results |
+| context | System prompts from chat model messages, RAG chunks from retriever |
 | searches | Retriever queries with result counts |
 | sources_read | Retrieved documents with content hashes |
 | tools_used | Tool start/end with input/output |
 | turn_count | Number of tool calls |
 | token_usage | LLM output token usage (prompt + completion tokens) |
-| metadata | Agent reasoning logs |
+| duration_ms | Monotonic time from run start to flush |
+| metadata | Agent reasoning logs, tool_calls from AIMessage |
 | schema_version | Always set |
 
-**N/A fields:** `correction` (no correction signal), `tags` (no tagging mechanism), `files_modified` (not tracked), `duration_ms` (not calculated at trace level).
+**N/A fields:** `correction` (no correction signal), `files_modified` (not tracked by LangChain callbacks).
 
 ---
 
@@ -164,7 +176,7 @@ pip install openflux[claude-agent-sdk]
 ```python
 from openflux.adapters.claude_agent_sdk import create_openflux_hooks
 
-hooks = create_openflux_hooks(agent="my-claude-agent")
+hooks, adapter = create_openflux_hooks(agent="my-claude-agent")
 
 # Pass hooks to ClaudeAgentOptions
 # options = ClaudeAgentOptions(hooks=hooks)
@@ -182,7 +194,7 @@ hooks = adapter.create_hooks()
 traces = adapter.completed_traces
 ```
 
-**How it works:** Hooks fire on `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, and `Stop`. The adapter accumulates tool events per session and builds a Trace when the agent stops.
+**How it works:** Hooks fire on `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop`, and `Stop`. The adapter accumulates tool events per session and builds a Trace when the agent stops.
 
 **Fields populated:**
 
@@ -190,16 +202,23 @@ traces = adapter.completed_traces
 |---|---|
 | id, timestamp, agent, session_id | Auto-generated / session data |
 | model | Via `record_usage()` call |
-| status | Tool errors set `Status.ERROR` |
+| task | User prompt from `UserPromptSubmit` hook |
+| decision | Result text via `record_usage()` call |
+| status | Explicit status via `record_usage()`, or tool errors |
+| scope | Constructor `scope` parameter |
+| tags | Constructor `tags` parameter |
+| context | Constructor `system_prompt` parameter |
+| searches | WebSearch/Grep/Glob tool calls |
 | sources_read | Read/WebFetch tool calls produce SourceRecords |
-| tools_used | All tool calls with input/output |
+| tools_used | All tool calls with input/output and duration |
 | files_modified | Write/Edit tool paths |
-| turn_count | Number of tool calls |
+| turn_count | Via `record_usage()` num_turns, or tool count |
 | token_usage | Via `adapter.record_usage(session_id, usage_dict, model="...")` |
-| metadata | `environment.cwd`, subagent info |
+| duration_ms | Via `record_usage()` duration_ms parameter |
+| metadata | `environment.cwd`, subagent info, tool_errors_count |
 | schema_version | Always set |
 
-**N/A fields:** `parent_id`, `task`, `decision`, `correction`, `scope`, `tags`, `context`, `searches`, `duration_ms`.
+**N/A fields:** `parent_id` (no parent trace concept), `correction` (no correction signal).
 
 ---
 
@@ -242,16 +261,23 @@ traces = consumer.completed_traces
 | Field | Source |
 |---|---|
 | id, timestamp, agent, session_id | Auto-generated |
-| model | (Set if accessible from agent config) |
+| model | Constructor `model` parameter |
+| task | First user TextMessage content |
+| decision | Last non-user TextMessage content |
 | status | Tool execution errors |
+| scope | Constructor `scope` parameter |
+| tags | Constructor `tags` + auto-generated `agent:name` tags |
+| context | Constructor `context` parameter |
 | searches | Tool calls matching `search_tools` set |
-| tools_used | ToolCallRequest/Execution events with input/output |
-| turn_count | Number of tool calls |
+| sources_read | Tool calls matching `source_tools` set |
+| tools_used | ToolCallRequest/Execution events with input/output/duration |
+| turn_count | TextMessages + tool call requests + handoffs |
 | token_usage | `models_usage` from messages (prompt + completion tokens) |
+| duration_ms | Monotonic time from first message to flush |
 | metadata | Handoffs, stop reason, agents seen |
 | schema_version | Always set |
 
-**N/A fields:** `parent_id`, `task`, `decision`, `correction`, `scope`, `tags`, `context`, `sources_read`, `files_modified`, `duration_ms`.
+**N/A fields:** `parent_id` (no parent trace concept), `correction` (no correction signal), `files_modified` (not tracked).
 
 ---
 
@@ -286,20 +312,24 @@ traces = listener.completed_traces  # One trace per task
 | Field | Source |
 |---|---|
 | id, timestamp, agent, session_id | Auto-generated (session shared per crew kickoff) |
+| parent_id | Crew trace ID (links task traces to crew) |
 | model | LLMCallCompletedEvent |
 | task | Task description |
 | decision | Task or agent completion output |
 | status | Tool errors set `Status.ERROR` |
 | scope | Agent role |
+| tags | Crew name + agent role |
+| context | Memory retrieval events (if MemoryRetrievalCompletedEvent available) |
+| searches | Knowledge retrieval events (if KnowledgeRetrievalCompletedEvent available) |
 | sources_read | LLM response content as API source records |
 | tools_used | Tool start/finish/error events with duration |
-| turn_count | LLM call count (not tool count) |
+| turn_count | LLM call count |
 | token_usage | LLMCallCompletedEvent usage |
 | duration_ms | Calculated from task start to flush |
 | metadata | `crew_name` |
 | schema_version | Always set |
 
-**N/A fields:** `parent_id`, `correction`, `tags`, `context`, `searches`, `files_modified`.
+**N/A fields:** `correction` (no correction signal), `files_modified` (not tracked by CrewAI events).
 
 ---
 
@@ -342,15 +372,17 @@ traces = callbacks._adapter.flush()
 | id, timestamp, agent, session_id | Auto-generated / ADK session ID |
 | model | LLM response metadata |
 | status | Error detection |
+| scope | Agent name from callback context |
+| tags | `google-adk` + model name |
 | context | System instructions from LLM requests |
 | searches | Tool calls matching `search_tools` set (includes `google_search`) |
 | tools_used | Before/after tool callbacks with duration |
-| turn_count | Number of tool calls |
 | token_usage | `usage_metadata` (prompt + candidate tokens) |
+| duration_ms | Computed from session start to flush timestamps |
 | metadata | Handoff data from `transfer_to_agent` calls |
 | schema_version | Always set |
 
-**N/A fields:** `parent_id`, `task`, `decision`, `correction`, `scope`, `tags`, `sources_read`, `files_modified`, `duration_ms` (trace-level).
+**N/A fields:** `parent_id` (no parent trace concept), `task` (not captured from ADK), `decision` (not captured from ADK), `correction` (no correction signal), `sources_read` (not classified), `files_modified` (not tracked).
 
 ---
 
@@ -375,7 +407,8 @@ server.run()  # Starts stdio transport
 
 **Exposed MCP tools:**
 
-- `trace_record` -- Record what the agent just did. Accepts `task`, `decision`, `agent`, `model`, `status`, `scope`, `tags`, `files_modified`, `correction`, `duration_ms`, `metadata`, `session_id`.
+- `trace_record` -- Record what the agent just did. Accepts all trace fields including `task`, `decision`, `agent`, `model`, `status`, `scope`, `tags`, `files_modified`, `correction`, `duration_ms`, `metadata`, `session_id`, `parent_id`, `turn_count`, `tools_used`, `context`, `searches`, `sources_read`, and token usage fields.
+- `trace_update` -- Update an existing trace with additional data.
 - `trace_search` -- Full-text search across past traces. Accepts `query`, `limit`, `agent`, `scope`.
 
 **Exposed MCP resources:**
@@ -383,9 +416,9 @@ server.run()  # Starts stdio transport
 - `trace://recent` -- Recent traces for session context injection.
 - `trace://context/{topic}` -- Past traces relevant to a topic (FTS5 search).
 
-**Fields populated:** Determined by what the MCP client passes to `trace_record`. All fields accepted by the tool are stored directly on the Trace.
+**Fields populated:** Determined by what the MCP client passes to `trace_record`. All 22 fields can be populated via tool parameters.
 
-**N/A fields:** `parent_id`, `turn_count`, `token_usage`, `context`, `searches`, `sources_read`, `tools_used` (the MCP tool creates traces from explicit parameters, not from observed events).
+**N/A fields:** None -- all fields are accepted as explicit parameters.
 
 ---
 

@@ -376,64 +376,6 @@ class OpenFluxCrewListener(BaseEventListener):
                             )
                         )
 
-    @staticmethod
-    def _extract_native_tool_calls(acc: _TaskAccumulator, response: Any) -> None:
-        """Create synthetic ToolRecords from native LLM tool-call responses."""
-        items = response if isinstance(response, list) else [response]
-        now = utc_now()
-        for item in items:
-            if isinstance(item, dict):
-                name = item.get("name", item.get("function", {}).get("name", ""))
-                args = item.get("arguments", item.get("input", ""))
-            else:
-                name = getattr(item, "name", "")
-                args = getattr(item, "arguments", getattr(item, "input", ""))
-            if not name:
-                continue
-            if isinstance(args, dict):
-                args = json.dumps(args, default=str)
-            acc.tools.append(
-                ToolRecord(
-                    name=str(name),
-                    tool_input=str(args)[:4096],
-                    tool_output="",
-                    duration_ms=0,
-                    timestamp=now,
-                )
-            )
-
-    @staticmethod
-    def _estimate_tokens(text: str) -> int:
-        """Rough character-based token estimate (~4 chars per token)."""
-        return len(text) // 4 if text else 0
-
-    @staticmethod
-    def _accumulate_tokens(acc: _TaskAccumulator, usage: Any) -> None:
-        """Add token counts from a usage dict or object to the accumulator."""
-        if usage is None:
-            return
-        if isinstance(usage, dict):
-            acc.token_usage.input_tokens += usage.get("prompt_tokens", 0) or usage.get(
-                "input_tokens", 0
-            )
-            acc.token_usage.output_tokens += usage.get(
-                "completion_tokens", 0
-            ) or usage.get("output_tokens", 0)
-        else:
-            acc.token_usage.input_tokens += getattr(
-                usage, "prompt_tokens", 0
-            ) or getattr(usage, "input_tokens", 0)
-            acc.token_usage.output_tokens += getattr(
-                usage, "completion_tokens", 0
-            ) or getattr(usage, "output_tokens", 0)
-
-    @staticmethod
-    def _clear_pending_tool(acc: _TaskAccumulator) -> None:
-        acc._pending_tool_name = ""
-        acc._pending_tool_input = ""
-        acc._pending_tool_timestamp = ""
-        acc._pending_tool_start_ns = 0
-
     def _task_key(self, task_obj: Any) -> str:
         task_id = getattr(task_obj, "id", None)
         if task_id:

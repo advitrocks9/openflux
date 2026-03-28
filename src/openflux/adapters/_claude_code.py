@@ -588,8 +588,8 @@ def _build_trace(
         classified = event.get("classified", {})
         if event.get("error"):
             has_error = True
-        # Count all tool events, not just those classified as tools_used
-        tool_event_count += 1
+        if event.get("tool_name"):
+            tool_event_count += 1
 
         for search_dict in classified.get("searches", []):
             trace.searches.append(SearchRecord(**search_dict))
@@ -673,8 +673,8 @@ def _apply_transcript_data(
         trace.context.extend(td.context)
     # Prefer transcript turn_count (user entries), fall back to tool events
     trace.turn_count = td.turn_count if td.turn_count > 0 else tool_event_count
-    # Prefer transcript duration (first→last timestamp), more accurate
-    trace.duration_ms = td.duration_ms
+    if td.duration_ms > 0:
+        trace.duration_ms = td.duration_ms
 
 
 def _apply_fallback_data(

@@ -23,8 +23,8 @@ The generic collector works with any framework. Record raw events and flush them
 import openflux
 
 collector = openflux.init(agent="my-agent")
-collector.record_event("session-1", {"type": "tool_call", "name": "search", "input": "query"})
-collector.record_event("session-1", {"type": "llm_response", "content": "result"})
+collector.record_event("session-1", {"type": "tool", "tool_name": "search", "tool_input": "query"})
+collector.record_event("session-1", {"type": "meta", "task": "answer question", "model": "gpt-4o"})
 trace = collector.flush("session-1")
 
 print(trace.id)          # trc-a1b2c3d4e5f6
@@ -100,9 +100,7 @@ All configuration is via environment variables. No config files required.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENFLUX_DB_PATH` | `~/.openflux/traces.db` | SQLite database location |
-| `OPENFLUX_OTLP_ENDPOINT` | (none) | OTLP/HTTP endpoint for export |
-| `OPENFLUX_AGENT` | `"unknown"` | Default agent name |
-| `OPENFLUX_DISABLED` | `false` | Kill switch |
+| `OPENFLUX_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP endpoint for export |
 | `OPENFLUX_FIDELITY` | `full` | `full` (raw content) or `redacted` (hash-only) |
 | `OPENFLUX_EXCLUDE_PATHS` | `*.env,*credentials*,...` | Glob patterns to exclude from content storage |
 

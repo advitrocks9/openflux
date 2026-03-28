@@ -15,9 +15,9 @@ Each adapter extracts token counts from its framework's response metadata:
 | CrewAI | `LLMCallCompletedEvent.usage` |
 | Google ADK | `usage_metadata` (prompt_token_count, candidates_token_count) |
 | Bedrock | `metadata.usage` (inputTokens, outputTokens) |
-| Claude Code | Not exposed by hooks (token usage unavailable) |
+| Claude Code | Transcript parsing (usage from assistant messages) |
 
-Token counts are accumulated across all LLM calls within a trace and stored in the `token_usage` field as a `TokenUsage` record with `input_tokens`, `output_tokens`, `cache_read_tokens`, and `cache_creation_tokens`.
+Token counts are accumulated across all LLM calls within a trace and stored as four integer columns in the `traces` table: `token_input`, `token_output`, `token_cache_read`, and `token_cache_creation`.
 
 ## CLI Usage
 
@@ -44,7 +44,7 @@ Token Usage:
 
 ## SQL Queries on the SQLite Database
 
-The SQLite database at `~/.openflux/traces.db` stores all traces and can be queried directly. The `traces` table has columns for all 22 fields, with token usage stored as JSON.
+The SQLite database at `~/.openflux/traces.db` stores all traces and can be queried directly. Token usage is stored as four integer columns: `token_input`, `token_output`, `token_cache_read`, `token_cache_creation`.
 
 ### Total tokens by agent
 
@@ -52,10 +52,10 @@ The SQLite database at `~/.openflux/traces.db` stores all traces and can be quer
 SELECT
     agent,
     COUNT(*) AS traces,
-    SUM(json_extract(token_usage, '$.input_tokens')) AS total_input,
-    SUM(json_extract(token_usage, '$.output_tokens')) AS total_output
+    SUM(token_input) AS total_input,
+    SUM(token_output) AS total_output
 FROM traces
-WHERE token_usage IS NOT NULL
+WHERE token_input > 0 OR token_output > 0
 GROUP BY agent
 ORDER BY total_input + total_output DESC;
 ```
@@ -67,10 +67,10 @@ SELECT
     DATE(timestamp) AS day,
     agent,
     COUNT(*) AS traces,
-    SUM(json_extract(token_usage, '$.input_tokens')) AS input_tokens,
-    SUM(json_extract(token_usage, '$.output_tokens')) AS output_tokens
+    SUM(token_input) AS input_tokens,
+    SUM(token_output) AS output_tokens
 FROM traces
-WHERE token_usage IS NOT NULL
+WHERE token_input > 0 OR token_output > 0
 GROUP BY day, agent
 ORDER BY day DESC;
 ```
@@ -83,10 +83,10 @@ This query applies approximate per-token rates. Adjust the rates to match your p
 SELECT
     model,
     COUNT(*) AS traces,
-    SUM(json_extract(token_usage, '$.input_tokens')) AS total_input,
-    SUM(json_extract(token_usage, '$.output_tokens')) AS total_output,
+    SUM(token_input) AS total_input,
+    SUM(token_output) AS total_output,
     ROUND(
-        SUM(json_extract(token_usage, '$.input_tokens')) *
+        SUM(token_input) *
         CASE model
             WHEN 'gpt-4o-mini' THEN 0.15 / 1000000
             WHEN 'gpt-4o' THEN 2.50 / 1000000
@@ -96,7 +96,7 @@ SELECT
             ELSE 1.00 / 1000000
         END
         +
-        SUM(json_extract(token_usage, '$.output_tokens')) *
+        SUM(token_output) *
         CASE model
             WHEN 'gpt-4o-mini' THEN 0.60 / 1000000
             WHEN 'gpt-4o' THEN 10.00 / 1000000
@@ -107,7 +107,7 @@ SELECT
         END
     , 4) AS estimated_cost_usd
 FROM traces
-WHERE token_usage IS NOT NULL AND model != ''
+WHERE (token_input > 0 OR token_output > 0) AND model != ''
 GROUP BY model
 ORDER BY estimated_cost_usd DESC;
 ```
@@ -119,13 +119,12 @@ SELECT
     id,
     agent,
     model,
-    json_extract(token_usage, '$.input_tokens') AS input_tokens,
-    json_extract(token_usage, '$.output_tokens') AS output_tokens,
-    json_extract(token_usage, '$.input_tokens') +
-    json_extract(token_usage, '$.output_tokens') AS total_tokens,
+    token_input,
+    token_output,
+    token_input + token_output AS total_tokens,
     SUBSTR(task, 1, 60) AS task_preview
 FROM traces
-WHERE token_usage IS NOT NULL
+WHERE token_input > 0 OR token_output > 0
 ORDER BY total_tokens DESC
 LIMIT 20;
 ```
@@ -138,15 +137,15 @@ For models that support prompt caching (Claude), measure cache effectiveness:
 SELECT
     model,
     COUNT(*) AS traces,
-    SUM(json_extract(token_usage, '$.cache_read_tokens')) AS cache_hits,
-    SUM(json_extract(token_usage, '$.cache_creation_tokens')) AS cache_writes,
-    SUM(json_extract(token_usage, '$.input_tokens')) AS total_input,
+    SUM(token_cache_read) AS cache_hits,
+    SUM(token_cache_creation) AS cache_writes,
+    SUM(token_input) AS total_input,
     ROUND(
-        100.0 * SUM(json_extract(token_usage, '$.cache_read_tokens')) /
-        NULLIF(SUM(json_extract(token_usage, '$.input_tokens')), 0),
+        100.0 * SUM(token_cache_read) /
+        NULLIF(SUM(token_input), 0),
     1) AS cache_hit_pct
 FROM traces
-WHERE token_usage IS NOT NULL
+WHERE token_input > 0 OR token_output > 0
 GROUP BY model
 HAVING cache_hits > 0;
 ```
@@ -156,16 +155,13 @@ HAVING cache_hits > 0;
 ```sql
 SELECT
     DATE(timestamp) AS day,
-    SUM(json_extract(token_usage, '$.input_tokens') +
-        json_extract(token_usage, '$.output_tokens')) AS total_tokens,
+    SUM(token_input + token_output) AS total_tokens,
     COUNT(*) AS trace_count,
     ROUND(
-        1.0 * SUM(json_extract(token_usage, '$.input_tokens') +
-                   json_extract(token_usage, '$.output_tokens')) /
-        COUNT(*),
+        1.0 * SUM(token_input + token_output) / COUNT(*),
     0) AS avg_tokens_per_trace
 FROM traces
-WHERE token_usage IS NOT NULL
+WHERE (token_input > 0 OR token_output > 0)
   AND timestamp >= DATE('now', '-7 days')
 GROUP BY day
 ORDER BY day;
@@ -177,7 +173,6 @@ A minimal Python script that reads from the OpenFlux database:
 
 ```python
 import sqlite3
-import json
 from pathlib import Path
 
 RATES = {
@@ -193,17 +188,16 @@ db = sqlite3.connect(str(Path.home() / ".openflux" / "traces.db"))
 db.row_factory = sqlite3.Row
 
 rows = db.execute("""
-    SELECT model, token_usage
+    SELECT model, token_input, token_output
     FROM traces
-    WHERE token_usage IS NOT NULL AND model != ''
+    WHERE (token_input > 0 OR token_output > 0) AND model != ''
 """).fetchall()
 
 totals: dict[str, dict] = {}
 for row in rows:
     model = row["model"]
-    usage = json.loads(row["token_usage"])
-    inp = usage.get("input_tokens", 0)
-    out = usage.get("output_tokens", 0)
+    inp = row["token_input"]
+    out = row["token_output"]
     rate_in, rate_out = RATES.get(model, DEFAULT_RATE)
     cost = inp * rate_in + out * rate_out
 

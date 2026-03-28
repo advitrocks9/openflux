@@ -125,10 +125,10 @@ Tested end-to-end with real API calls (Gemini, Claude) and simulated event strea
 |---------|----------|------------|---------|
 | MCP | 22/22 (100%) | — | `openflux[mcp]` |
 | Amazon Bedrock | 21/22 (100%) | files_modified (cloud agents) | `openflux[bedrock]` |
-| Claude Code | 20/22 (91%) | parent_id, context (not in transcripts) | `(stdlib)` |
-| LangChain | 20/22 (100%) | parent_id, correction | `openflux[langchain]` |
-| Claude Agent SDK | 19/22 (100%) | parent_id, correction, files_modified | `openflux[claude-agent-sdk]` |
-| Google ADK | 18/22 (100%) | parent_id, correction, files_modified, searches | `openflux[google-adk]` |
+| Claude Code | 21/22 (95%) | parent_id | `(stdlib)` |
+| LangChain | 20/22 (91%) | correction, files_modified | `openflux[langchain]` |
+| Claude Agent SDK | 20/22 (91%) | parent_id, correction | `openflux[claude-agent-sdk]` |
+| Google ADK | 16/22 (73%) | parent_id, task, decision, correction, sources_read, files_modified | `openflux[google-adk]` |
 | OpenAI Agents SDK | Working | Untested (API quota) | `openflux[openai]` |
 | AutoGen v0.4 | Working | Untested (API quota) | `openflux[autogen]` |
 | CrewAI | Working | Untested (API quota) | `openflux[crewai]` |

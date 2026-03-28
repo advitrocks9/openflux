@@ -51,18 +51,6 @@ _DEFAULT_WRITE_TOOLS: set[str] = {
     "edit_file",
     "write",
 }
-# Keys in tool args that hint at file/URL paths
-_PATH_ARG_KEYS: frozenset[str] = frozenset(
-    {
-        "path",
-        "file_path",
-        "filename",
-        "file",
-        "url",
-        "uri",
-        "filepath",
-    }
-)
 
 
 @dataclass(slots=True)
@@ -82,8 +70,7 @@ class _SessionAccumulator:
     metadata: dict[str, Any] = field(default_factory=dict)
     has_error: bool = False
     llm_turn_count: int = 0
-    # monotonic timestamps for sub-ms tool timing precision
-    _tool_starts: dict[str, float] = field(default_factory=dict)
+    _tool_starts: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -356,23 +343,6 @@ def _compute_duration_ms(start: str, end: str) -> int:
         return max(0, int((e - s).total_seconds() * 1000))
     except (ValueError, TypeError):
         return 0
-
-
-def _extract_path_from_args(args: dict[str, Any]) -> str:
-    """Pull a file path or URL from tool args using known key names."""
-    if not args:
-        return ""
-    for key in _PATH_ARG_KEYS:
-        val = args.get(key)
-        if val and isinstance(val, str):
-            return val
-    return ""
-
-
-def _looks_like_read(tool_name: str) -> bool:
-    """Heuristic: does the tool name suggest a read operation?"""
-    lower = tool_name.lower()
-    return any(kw in lower for kw in ("read", "fetch", "load", "get", "download"))
 
 
 def _serialize_tool_response(response: Any) -> str:

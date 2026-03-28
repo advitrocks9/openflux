@@ -101,18 +101,16 @@ class Trace:
     status: str = Status.COMPLETED
     correction: str | None = None
     scope: str | None = None
-    tags: list[str] = field(default_factory=lambda: list[str]())
-    context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
-    searches: list[SearchRecord] = field(default_factory=lambda: list[SearchRecord]())
-    sources_read: list[SourceRecord] = field(
-        default_factory=lambda: list[SourceRecord]()
-    )
-    tools_used: list[ToolRecord] = field(default_factory=lambda: list[ToolRecord]())
-    files_modified: list[str] = field(default_factory=lambda: list[str]())
+    tags: list[str] = field(default_factory=list)
+    context: list[ContextRecord] = field(default_factory=list)
+    searches: list[SearchRecord] = field(default_factory=list)
+    sources_read: list[SourceRecord] = field(default_factory=list)
+    tools_used: list[ToolRecord] = field(default_factory=list)
+    files_modified: list[str] = field(default_factory=list)
     turn_count: int = 0
     token_usage: TokenUsage | None = None
     duration_ms: int = 0
-    metadata: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
+    metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: str = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
