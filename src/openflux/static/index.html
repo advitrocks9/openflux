@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenFlux Trace Explorer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+    background: #0d0d0d; color: #e0e0e0;
+    padding: 32px; max-width: 960px; margin: 0 auto;
+    line-height: 1.5;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 32px; }
+  h2 { font-size: 14px; font-weight: 500; color: #aaa; margin: 24px 0 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px; margin-bottom: 32px;
+  }
+  .stat-card {
+    background: #181818; border: 1px solid #2a2a2a; border-radius: 8px;
+    padding: 16px;
+  }
+  .stat-label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-value { font-size: 22px; font-weight: 600; color: #fff; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-size: 11px; font-weight: 500; color: #666;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    padding: 8px 12px; border-bottom: 1px solid #2a2a2a;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid #1a1a1a; }
+  tr:hover td { background: #1a1a1a; }
+  .mono { font-variant-numeric: tabular-nums; }
+  .status-completed { color: #5cb85c; }
+  .status-error { color: #d9534f; }
+  .status-timeout { color: #f0ad4e; }
+  .status-cancelled { color: #888; }
+  .api-list { list-style: none; }
+  .api-list li { margin: 6px 0; }
+  .api-list a { color: #7b8cff; text-decoration: none; }
+  .api-list a:hover { text-decoration: underline; }
+  .empty { color: #555; font-style: italic; padding: 24px 0; }
+  .tag { display: inline-block; background: #2a2a2a; color: #aaa; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 4px; }
+</style>
+</head>
+<body>
+  <h1>OpenFlux Trace Explorer</h1>
+  <p class="subtitle">Full UI coming soon. Use the API endpoints below.</p>
+
+  <h2>Dashboard</h2>
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat-card"><div class="stat-label">Loading...</div></div>
+  </div>
+
+  <h2>Recent Traces</h2>
+  <div id="traces-container"><p class="empty">Loading...</p></div>
+
+  <h2>API Endpoints</h2>
+  <ul class="api-list">
+    <li><a href="/api/traces?limit=10">/api/traces</a> — paginated trace list (limit, offset, agent, status, search, sort, order)</li>
+    <li><a href="/api/stats">/api/stats</a> — aggregate statistics</li>
+    <li><a href="/api/stats/timeline?days=30">/api/stats/timeline</a> — daily breakdown (days param)</li>
+    <li>/api/traces/:id — full trace detail</li>
+  </ul>
+
+<script>
+(function() {
+  function fmt(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+    return String(n);
+  }
+
+  function statusClass(s) {
+    return "status-" + (s || "completed");
+  }
+
+  function renderStats(data) {
+    var grid = document.getElementById("stats-grid");
+    grid.innerHTML = [
+      card("Total Traces", data.total_traces),
+      card("Input Tokens", fmt(data.total_input_tokens)),
+      card("Output Tokens", fmt(data.total_output_tokens)),
+      card("Agents", data.agents.length),
+    ].join("");
+  }
+
+  function card(label, value) {
+    return '<div class="stat-card"><div class="stat-label">' + label +
+      '</div><div class="stat-value">' + value + '</div></div>';
+  }
+
+  function renderTraces(data) {
+    var el = document.getElementById("traces-container");
+    if (!data.traces || data.traces.length === 0) {
+      el.innerHTML = '<p class="empty">No traces yet. Run an agent with OpenFlux to start collecting.</p>';
+      return;
+    }
+    var html = '<table><thead><tr><th>ID</th><th>Agent</th><th>Task</th><th>Status</th><th>Model</th><th class="mono">Tokens</th><th class="mono">Duration</th><th>Tools</th></tr></thead><tbody>';
+    data.traces.forEach(function(t) {
+      var tokens = fmt(t.token_usage.input_tokens) + " / " + fmt(t.token_usage.output_tokens);
+      var dur = t.duration_ms ? (t.duration_ms / 1000).toFixed(1) + "s" : "-";
+      var task = (t.task || "").length > 50 ? t.task.substring(0, 49) + "\u2026" : (t.task || "-");
+      html += '<tr><td class="mono"><a href="/api/traces/' + t.id + '" style="color:#7b8cff;text-decoration:none">' + t.id + '</a></td>';
+      html += '<td><span class="tag">' + t.agent + '</span></td>';
+      html += '<td>' + task + '</td>';
+      html += '<td class="' + statusClass(t.status) + '">' + t.status + '</td>';
+      html += '<td style="color:#888;font-size:12px">' + (t.model || "-") + '</td>';
+      html += '<td class="mono">' + tokens + '</td>';
+      html += '<td class="mono">' + dur + '</td>';
+      html += '<td class="mono">' + t.tool_count + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    html += '<p style="color:#555;font-size:12px;margin-top:12px">Showing ' + data.traces.length + ' of ' + data.total + ' traces</p>';
+    el.innerHTML = html;
+  }
+
+  fetch("/api/stats").then(function(r) { return r.json(); }).then(renderStats).catch(function() {
+    document.getElementById("stats-grid").innerHTML = '<div class="stat-card"><div class="stat-label">Failed to load stats</div></div>';
+  });
+
+  fetch("/api/traces?limit=10").then(function(r) { return r.json(); }).then(renderTraces).catch(function() {
+    document.getElementById("traces-container").innerHTML = '<p class="empty">Failed to load traces.</p>';
+  });
+})();
+</script>
+</body>
+</html>

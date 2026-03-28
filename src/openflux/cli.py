@@ -366,6 +366,13 @@ def _install_claude_code() -> None:
     print("\nOpenFlux will now capture Claude Code telemetry.")
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    from openflux.serve import serve
+
+    db = getattr(args, "db", None)
+    serve(port=args.port, db_path=db)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="openflux",
@@ -413,6 +420,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--list", action="store_true", help="List available adapters"
     )
     p_install.set_defaults(func=cmd_install)
+
+    p_serve = subs.add_parser("serve", help="Start local trace explorer UI")
+    p_serve.add_argument(
+        "--port", type=int, default=5173, help="Port (default: 5173)"
+    )
+    p_serve.add_argument("--db", help="Path to SQLite database")
+    p_serve.set_defaults(func=cmd_serve)
 
     return parser
 

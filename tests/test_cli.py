@@ -406,9 +406,10 @@ class TestCmdInstall:
     ) -> None:
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.parent.mkdir(parents=True)
+        cmd = CLAUDE_CODE_HOOKS["SessionStart"]
         existing = {"hooks": {"SessionStart": [{
             "matcher": "",
-            "hooks": [{"type": "command", "command": CLAUDE_CODE_HOOKS["SessionStart"]}],
+            "hooks": [{"type": "command", "command": cmd}],
         }]}}
         settings_path.write_text(json.dumps(existing))
         with patch("openflux.cli.Path.home", return_value=tmp_path):
