@@ -324,7 +324,8 @@ class TestEmptyEvents:
         assert trace.agent == "test"
         assert trace.turn_count == 0
 
-    def test_turn_count_matches_tools(self) -> None:
+    def test_turn_count_defaults_to_zero(self) -> None:
+        """Normalizer leaves turn_count at 0; adapters with real data override it."""
         n = Normalizer(agent="test")
         trace = n.normalize(
             [
@@ -334,4 +335,17 @@ class TestEmptyEvents:
             ],
             "ses-001",
         )
-        assert trace.turn_count == 3
+        assert trace.turn_count == 0
+        assert len(trace.tools_used) == 3
+
+    def test_turn_count_from_meta_event(self) -> None:
+        """Meta events can explicitly set turn_count."""
+        n = Normalizer(agent="test")
+        trace = n.normalize(
+            [
+                {"type": "tool", "tool_name": "A"},
+                {"type": "meta", "turn_count": 5},
+            ],
+            "ses-001",
+        )
+        assert trace.turn_count == 5

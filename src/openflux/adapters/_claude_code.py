@@ -608,6 +608,16 @@ def _build_trace(
     if has_error:
         trace.status = Status.ERROR
 
+    if meta.started_at:
+        from datetime import UTC, datetime
+
+        try:
+            start = datetime.fromisoformat(meta.started_at.replace("Z", "+00:00"))
+            now = datetime.now(UTC)
+            trace.duration_ms = int((now - start).total_seconds() * 1000)
+        except ValueError:
+            pass
+
     trace.metadata["environment"] = {
         "cwd": meta.cwd,
         "permission_mode": meta.permission_mode,

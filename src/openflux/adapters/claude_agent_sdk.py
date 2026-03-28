@@ -29,7 +29,7 @@ from openflux.schema import (
     Trace,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("openflux")
 
 _HAS_SDK = importlib.util.find_spec("claude_agent_sdk") is not None
 
@@ -140,7 +140,10 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        self._record_tool(input_data, error=False)
+        try:
+            self._record_tool(input_data, error=False)
+        except Exception:
+            logger.warning("OpenFlux: error in post_tool_use hook", exc_info=True)
         return {}
 
     async def _on_post_tool_use_failure(
@@ -149,7 +152,12 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        self._record_tool(input_data, error=True)
+        try:
+            self._record_tool(input_data, error=True)
+        except Exception:
+            logger.warning(
+                "OpenFlux: error in post_tool_use_failure hook", exc_info=True
+            )
         return {}
 
     async def _on_subagent_start(
@@ -158,17 +166,20 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        session_id = input_data.get("session_id", "")
-        if not session_id:
-            return {}
-        with self._lock:
-            acc = self._get_or_create(session_id)
-            acc.subagents.append(
-                {
-                    "agent_id": input_data.get("agent_id", ""),
-                    "agent_type": input_data.get("agent_type", ""),
-                }
-            )
+        try:
+            session_id = input_data.get("session_id", "")
+            if not session_id:
+                return {}
+            with self._lock:
+                acc = self._get_or_create(session_id)
+                acc.subagents.append(
+                    {
+                        "agent_id": input_data.get("agent_id", ""),
+                        "agent_type": input_data.get("agent_type", ""),
+                    }
+                )
+        except Exception:
+            logger.warning("OpenFlux: error in subagent_start hook", exc_info=True)
         return {}
 
     async def _on_subagent_stop(
@@ -204,27 +215,26 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        session_id = input_data.get("session_id", "")
-        if not session_id:
-            return {}
+        try:
+            session_id = input_data.get("session_id", "")
+            if not session_id:
+                return {}
 
-        with self._lock:
-            acc = self._sessions.pop(session_id, None)
+            with self._lock:
+                acc = self._sessions.pop(session_id, None)
             if acc is None:
-                acc = _SessionAccumulator(
-                    session_id=session_id,
-                    started_at=utc_now(),
-                )
-            acc.cwd = input_data.get("cwd", acc.cwd)
+                return {}
 
-        trace = self._build_trace(acc)
-        with self._lock:
-            self._trace_index[session_id] = len(self._completed)
-            self._completed.append(trace)
+            trace = self._build_trace(acc)
+            with self._lock:
+                self._completed.append(trace)
 
-        # Don't write to sink yet — wait for record_usage() to patch in
-        # token data from ResultMessage, which arrives after Stop.
-        # If no record_usage() call comes, finalize() flushes to sink.
+            if self._on_trace:
+                self._on_trace(trace)
+            else:
+                self._write_default_sink(trace)
+        except Exception:
+            logger.warning("OpenFlux: error in stop hook", exc_info=True)
 
         return {}
 
@@ -415,26 +425,8 @@ class ClaudeAgentSDKAdapter:
             metadata=metadata,
         )
 
-    @staticmethod
-    def _write_default_sink(trace: Trace) -> None:
+    def _write_default_sink(self, trace: Trace) -> None:
         write_trace_to_default_sink(trace)
-
-    def finalize(self) -> None:
-        """Flush any traces that weren't patched by record_usage()."""
-        with self._lock:
-            unflushed = list(self._trace_index.items())
-            self._trace_index.clear()
-
-        for _session_id, idx in unflushed:
-            with self._lock:
-                if idx < len(self._completed):
-                    trace = self._completed[idx]
-                else:
-                    continue
-            if self._on_trace:
-                self._on_trace(trace)
-            else:
-                self._write_default_sink(trace)
 
     @property
     def completed_traces(self) -> list[Trace]:
