@@ -56,77 +56,6 @@ _DEFAULT_SEARCH_TOOLS: set[str] = {
     "searx_search",
 }
 
-_DEFAULT_FILE_READ_TOOLS: set[str] = {
-    "read_file",
-    "file_reader",
-    "load_file",
-    "read_document",
-    "file_search",
-}
-
-_DEFAULT_FILE_WRITE_TOOLS: set[str] = {
-    "write_file",
-    "file_writer",
-    "save_file",
-    "create_file",
-    "edit_file",
-    "append_file",
-}
-
-# Generic chain names that don't provide useful scope information
-_GENERIC_SCOPE_NAMES: set[str] = {
-    "LangGraph",
-    "RunnableSequence",
-    "RunnableParallel",
-    "RunnableLambda",
-    "RunnablePassthrough",
-    "RunnableBranch",
-}
-
-
-def _extract_last_human_message(messages: list[Any]) -> str:
-    """Find the last human message content from a LangGraph messages list."""
-    for msg in reversed(messages):
-        # Handle tuples like ("human", "message text")
-        if isinstance(msg, tuple) and len(msg) >= 2:
-            if msg[0] == "human":
-                return str(msg[1])[:2000]
-            continue
-        msg_type = getattr(msg, "type", None)
-        # Messages can be dicts (serialized) or objects
-        if msg_type is None and isinstance(msg, dict):
-            msg_type = msg.get("type", "")
-        if msg_type == "human":
-            content = getattr(msg, "content", None)
-            if content is None and isinstance(msg, dict):
-                content = msg.get("content", "")
-            if content:
-                return str(content)[:2000]
-    return ""
-
-
-def _extract_final_ai_message(messages: list[Any]) -> str:
-    """Find the last AI message without tool_calls (the final answer)."""
-    for msg in reversed(messages):
-        msg_type = getattr(msg, "type", None)
-        if msg_type is None and isinstance(msg, dict):
-            msg_type = msg.get("type", "")
-        if msg_type != "ai":
-            continue
-        # Skip intermediate tool-calling messages
-        tool_calls = getattr(msg, "tool_calls", None)
-        if tool_calls is None and isinstance(msg, dict):
-            tool_calls = msg.get("tool_calls", [])
-        if tool_calls:
-            continue
-        content = getattr(msg, "content", None)
-        if content is None and isinstance(msg, dict):
-            content = msg.get("content", "")
-        if content:
-            return str(content)[:4096]
-    return ""
-
-
 @dataclass(slots=True)
 class _RunAccumulator:
     run_id: str
@@ -162,23 +91,17 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         agent: str = "langchain-agent",
         on_trace: Callable[[Trace], None] | None = None,
         search_tools: set[str] | None = None,
-        file_read_tools: set[str] | None = None,
-        file_write_tools: set[str] | None = None,
         scope: str | None = None,
     ) -> None:
         super().__init__()
         self._agent = agent
         self._on_trace = on_trace
         self._search_tools = search_tools or _DEFAULT_SEARCH_TOOLS
-        self._file_read_tools = file_read_tools or _DEFAULT_FILE_READ_TOOLS
-        self._file_write_tools = file_write_tools or _DEFAULT_FILE_WRITE_TOOLS
         self._default_scope = scope
         self._lock = threading.Lock()
         self._runs: dict[str, _RunAccumulator] = {}
         self._completed: list[Trace] = []
         self._top_level_runs: set[str] = set()
-        # Per-tool-run pending state: run_id -> (name, input, timestamp, mono)
-        self._pending_tools: dict[str, tuple[str, str, str, float]] = {}
 
     def _get_or_create_run(
         self,
@@ -313,29 +236,6 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             self._extract_tool_calls_from_generations(response, root)
         except Exception:
             logger.warning("on_llm_end callback", exc_info=True)
-
-    @staticmethod
-    def _extract_tokens_from_generations(response: Any, root: _RunAccumulator) -> None:
-        """Extract token counts from generation message usage_metadata."""
-        generations: list[list[Any]] = getattr(response, "generations", [])
-        for gen_list in generations:
-            for gen in gen_list:
-                msg = getattr(gen, "message", None)
-                if msg is None:
-                    continue
-                usage = getattr(msg, "usage_metadata", None)
-                if usage is None:
-                    continue
-                # LangChain UsageMetadata uses input_tokens/output_tokens
-                usage_dict = (
-                    usage if isinstance(usage, dict) else getattr(usage, "__dict__", {})
-                )
-                inp = int(usage_dict.get("input_tokens", 0))
-                out = int(usage_dict.get("output_tokens", 0))
-                if inp or out:
-                    root.token_usage.input_tokens += inp
-                    root.token_usage.output_tokens += out
-                    return
 
     @staticmethod
     def _extract_model_from_generations(response: Any, root: _RunAccumulator) -> None:
