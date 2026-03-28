@@ -1,17 +1,18 @@
 <p align="center">
-  <img src="assets/logo.png" width="120" alt="OpenFlux">
+  <picture>
+    <img src="assets/logo.png" width="80" alt="OpenFlux">
+  </picture>
 </p>
-
 <h1 align="center">OpenFlux</h1>
-
 <p align="center">
-  <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/v/openflux" alt="PyPI"></a>
-  <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/dm/openflux" alt="Downloads"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT"></a>
+  <em>Open standard for AI agent telemetry. One schema across every framework.</em>
 </p>
-
-<p align="center">Open standard for AI agent telemetry. One schema across every framework.</p>
+<p align="center">
+  <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/v/openflux?style=flat-square&color=6366f1" alt="PyPI"></a>
+  <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/dm/openflux?style=flat-square&color=818cf8" alt="Downloads"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-4f46e5?style=flat-square" alt="Python 3.12+"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-a5b4fc?style=flat-square" alt="MIT"></a>
+</p>
 
 ## Why
 
