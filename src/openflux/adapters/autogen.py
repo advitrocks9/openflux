@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from openflux._util import generate_session_id, generate_trace_id, utc_now
+from openflux._util import (
+    generate_session_id,
+    generate_trace_id,
+    utc_now,
+    write_trace_to_default_sink,
+)
 from openflux.schema import (
     SearchRecord,
     Status,
@@ -16,6 +22,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger("openflux")
 
 _HAS_AUTOGEN = importlib.util.find_spec("autogen_agentchat") is not None
 
@@ -54,28 +62,31 @@ class AutoGenStreamConsumer:
         self._completed: list[Trace] = []
 
     def process(self, message: Any) -> None:
-        with self._lock:
-            if self._acc is None:
-                self._acc = _RunAccumulator(
-                    session_id=generate_session_id(),
-                    started_at=utc_now(),
-                )
+        try:
+            with self._lock:
+                if self._acc is None:
+                    self._acc = _RunAccumulator(
+                        session_id=generate_session_id(),
+                        started_at=utc_now(),
+                    )
 
-        match type(message).__name__:
-            case "TextMessage":
-                self._handle_text_message(message)
-            case "ToolCallRequestEvent":
-                self._handle_tool_call_request(message)
-            case "ToolCallExecutionEvent":
-                self._handle_tool_call_execution(message)
-            case "HandoffMessage":
-                self._handle_handoff(message)
-            case "StopMessage":
-                self._handle_stop(message)
-            case "ToolCallSummaryMessage":
-                self._handle_tool_call_summary(message)
-            case "TaskResult":
-                self._handle_task_result(message)
+            match type(message).__name__:
+                case "TextMessage":
+                    self._handle_text_message(message)
+                case "ToolCallRequestEvent":
+                    self._handle_tool_call_request(message)
+                case "ToolCallExecutionEvent":
+                    self._handle_tool_call_execution(message)
+                case "HandoffMessage":
+                    self._handle_handoff(message)
+                case "StopMessage":
+                    self._handle_stop(message)
+                case "ToolCallSummaryMessage":
+                    self._handle_tool_call_summary(message)
+                case "TaskResult":
+                    self._handle_task_result(message)
+        except Exception:
+            logger.warning("OpenFlux: error in process callback", exc_info=True)
 
     def flush(self) -> Trace | None:
         with self._lock:
@@ -266,11 +277,4 @@ class AutoGenStreamConsumer:
         return trace
 
     def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            sink = SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+        write_trace_to_default_sink(trace)

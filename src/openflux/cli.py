@@ -12,6 +12,7 @@ from openflux.sinks.sqlite import SQLiteSink
 
 DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
+
 def _hook_cmd(subcommand: str) -> str:
     return f"{sys.executable} -m openflux.adapters.claude_code {subcommand}"
 
@@ -344,10 +345,12 @@ def _install_claude_code() -> None:
             skipped.append(event_name)
             continue
 
-        event_hooks.append({
-            "matcher": "",
-            "hooks": [{"type": "command", "command": command}],
-        })
+        event_hooks.append(
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": command}],
+            }
+        )
         added.append(event_name)
 
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")

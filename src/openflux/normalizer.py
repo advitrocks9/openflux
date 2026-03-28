@@ -62,7 +62,8 @@ class Normalizer:
         )
         for event in events:
             self._classify(event, trace)
-        trace.turn_count = len(trace.tools_used)
+        # Adapters with real turn information override turn_count directly;
+        # the normalizer leaves the default (0) rather than guessing.
         return trace
 
     def _classify(self, event: dict[str, Any], trace: Trace) -> None:
@@ -157,6 +158,8 @@ class Normalizer:
             trace.scope = event["scope"]
         if "tags" in event:
             trace.tags.extend(event["tags"])
+        if "turn_count" in event:
+            trace.turn_count = event["turn_count"]
 
     def _auto_classify(self, event: dict[str, Any], trace: Trace) -> None:
         tool_name = event.get("tool_name", "")

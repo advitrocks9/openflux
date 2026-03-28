@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -12,6 +13,7 @@ from openflux._util import (
     content_hash,
     generate_trace_id,
     utc_now,
+    write_trace_to_default_sink,
 )
 from openflux.schema import (
     SourceRecord,
@@ -21,6 +23,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger("openflux")
 
 _HAS_SDK = importlib.util.find_spec("claude_agent_sdk") is not None
 
@@ -81,7 +85,10 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        self._record_tool(input_data, error=False)
+        try:
+            self._record_tool(input_data, error=False)
+        except Exception:
+            logger.warning("OpenFlux: error in post_tool_use hook", exc_info=True)
         return {}
 
     async def _on_post_tool_use_failure(
@@ -90,7 +97,12 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        self._record_tool(input_data, error=True)
+        try:
+            self._record_tool(input_data, error=True)
+        except Exception:
+            logger.warning(
+                "OpenFlux: error in post_tool_use_failure hook", exc_info=True
+            )
         return {}
 
     async def _on_subagent_start(
@@ -99,17 +111,20 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        session_id = input_data.get("session_id", "")
-        if not session_id:
-            return {}
-        with self._lock:
-            acc = self._get_or_create(session_id)
-            acc.subagents.append(
-                {
-                    "agent_id": input_data.get("agent_id", ""),
-                    "agent_type": input_data.get("agent_type", ""),
-                }
-            )
+        try:
+            session_id = input_data.get("session_id", "")
+            if not session_id:
+                return {}
+            with self._lock:
+                acc = self._get_or_create(session_id)
+                acc.subagents.append(
+                    {
+                        "agent_id": input_data.get("agent_id", ""),
+                        "agent_type": input_data.get("agent_type", ""),
+                    }
+                )
+        except Exception:
+            logger.warning("OpenFlux: error in subagent_start hook", exc_info=True)
         return {}
 
     async def _on_stop(
@@ -118,23 +133,26 @@ class ClaudeAgentSDKAdapter:
         tool_use_id: str | None,
         context: Any,
     ) -> dict[str, Any]:
-        session_id = input_data.get("session_id", "")
-        if not session_id:
-            return {}
+        try:
+            session_id = input_data.get("session_id", "")
+            if not session_id:
+                return {}
 
-        with self._lock:
-            acc = self._sessions.pop(session_id, None)
-        if acc is None:
-            return {}
+            with self._lock:
+                acc = self._sessions.pop(session_id, None)
+            if acc is None:
+                return {}
 
-        trace = self._build_trace(acc)
-        with self._lock:
-            self._completed.append(trace)
+            trace = self._build_trace(acc)
+            with self._lock:
+                self._completed.append(trace)
 
-        if self._on_trace:
-            self._on_trace(trace)
-        else:
-            self._write_default_sink(trace)
+            if self._on_trace:
+                self._on_trace(trace)
+            else:
+                self._write_default_sink(trace)
+        except Exception:
+            logger.warning("OpenFlux: error in stop hook", exc_info=True)
 
         return {}
 
@@ -232,14 +250,7 @@ class ClaudeAgentSDKAdapter:
         )
 
     def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            sink = SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+        write_trace_to_default_sink(trace)
 
     @property
     def completed_traces(self) -> list[Trace]:

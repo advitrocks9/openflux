@@ -2,11 +2,17 @@
 
 import importlib.util
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from openflux._util import content_hash, generate_trace_id, utc_now
+from openflux._util import (
+    content_hash,
+    generate_trace_id,
+    utc_now,
+    write_trace_to_default_sink,
+)
 from openflux.schema import (
     ContextRecord,
     ContextType,
@@ -16,6 +22,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger("openflux")
 
 _HAS_AGENTS = importlib.util.find_spec("agents") is not None
 
@@ -59,60 +67,69 @@ class OpenFluxProcessor(TracingProcessor):
         self._completed: list[Trace] = []
 
     def on_trace_start(self, trace: Any) -> None:
-        trace_id: str = str(getattr(trace, "trace_id", str(trace)))
-        with self._lock:
-            self._traces[trace_id] = _TraceAccumulator(
-                trace_id=trace_id,
-                started_at=utc_now(),
-            )
+        try:
+            trace_id: str = str(getattr(trace, "trace_id", str(trace)))
+            with self._lock:
+                self._traces[trace_id] = _TraceAccumulator(
+                    trace_id=trace_id,
+                    started_at=utc_now(),
+                )
+        except Exception:
+            logger.warning("OpenFlux: error in on_trace_start callback", exc_info=True)
 
     def on_trace_end(self, trace: Any) -> None:
-        trace_id: str = str(getattr(trace, "trace_id", str(trace)))
-        with self._lock:
-            acc = self._traces.pop(trace_id, None)
-        if acc is None:
-            return
+        try:
+            trace_id: str = str(getattr(trace, "trace_id", str(trace)))
+            with self._lock:
+                acc = self._traces.pop(trace_id, None)
+            if acc is None:
+                return
 
-        trace = self._build_trace(acc)
-        with self._lock:
-            self._completed.append(trace)
+            trace = self._build_trace(acc)
+            with self._lock:
+                self._completed.append(trace)
 
-        if self._on_trace:
-            self._on_trace(trace)
-        else:
-            self._write_default_sink(trace)
+            if self._on_trace:
+                self._on_trace(trace)
+            else:
+                self._write_default_sink(trace)
+        except Exception:
+            logger.warning("OpenFlux: error in on_trace_end callback", exc_info=True)
 
     def on_span_start(self, span: Any) -> None:
         pass
 
     def on_span_end(self, span: Any) -> None:
-        trace_id: str = str(getattr(span, "trace_id", ""))
-        with self._lock:
-            acc = self._traces.get(trace_id)
-        if acc is None:
-            return
+        try:
+            trace_id: str = str(getattr(span, "trace_id", ""))
+            with self._lock:
+                acc = self._traces.get(trace_id)
+            if acc is None:
+                return
 
-        span_data = getattr(span, "span_data", None)
-        if span_data is None:
-            return
+            span_data = getattr(span, "span_data", None)
+            if span_data is None:
+                return
 
-        if getattr(span, "error", None):
-            acc.has_error = True
+            if getattr(span, "error", None):
+                acc.has_error = True
 
-        class_name = type(span_data).__name__
-        match class_name:
-            case "AgentSpanData":
-                self._handle_agent_span(span_data, acc)
-            case "GenerationSpanData":
-                self._handle_generation_span(span_data, acc)
-            case "FunctionSpanData":
-                self._handle_function_span(span, span_data, acc)
-            case "HandoffSpanData":
-                self._handle_handoff_span(span_data, acc)
-            case "GuardrailSpanData":
-                self._handle_guardrail_span(span_data, acc)
-            case _:
-                pass
+            class_name = type(span_data).__name__
+            match class_name:
+                case "AgentSpanData":
+                    self._handle_agent_span(span_data, acc)
+                case "GenerationSpanData":
+                    self._handle_generation_span(span_data, acc)
+                case "FunctionSpanData":
+                    self._handle_function_span(span, span_data, acc)
+                case "HandoffSpanData":
+                    self._handle_handoff_span(span_data, acc)
+                case "GuardrailSpanData":
+                    self._handle_guardrail_span(span_data, acc)
+                case _:
+                    pass
+        except Exception:
+            logger.warning("OpenFlux: error in on_span_end callback", exc_info=True)
 
     def shutdown(self) -> None:
         self.force_flush()
@@ -240,11 +257,4 @@ class OpenFluxProcessor(TracingProcessor):
         )
 
     def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            sink = SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+        write_trace_to_default_sink(trace)

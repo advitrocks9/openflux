@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
+import threading
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openflux.schema import Trace
+    from openflux.sinks.sqlite import SQLiteSink
+
+logger = logging.getLogger("openflux")
 
 DEFAULT_EXCLUDE_PATTERNS: list[str] = [
     "*.env",
@@ -58,3 +67,43 @@ def get_exclude_patterns() -> list[str]:
     if not env_val:
         return DEFAULT_EXCLUDE_PATTERNS
     return [p.strip() for p in env_val.split(",") if p.strip()]
+
+
+# Lazy singleton for the default SQLite sink so adapters don't open
+# a new connection per trace.
+_default_sink: SQLiteSink | None = None
+_default_sink_lock = threading.Lock()
+
+
+def _get_default_sink() -> SQLiteSink:
+    """Return (and lazily create) the module-level default SQLiteSink."""
+    global _default_sink  # noqa: PLW0603
+    if _default_sink is None:
+        with _default_sink_lock:
+            if _default_sink is None:
+                from openflux.sinks.sqlite import SQLiteSink
+
+                _default_sink = SQLiteSink()
+    return _default_sink  # type: ignore[return-value]
+
+
+def write_trace_to_default_sink(trace: Trace) -> None:
+    """Write a trace to the shared default SQLite sink.
+
+    Recreates the sink if the connection was closed externally.
+    """
+    global _default_sink  # noqa: PLW0603
+    try:
+        sink = _get_default_sink()
+        sink.write(trace)
+    except Exception:
+        # Connection may have been closed; reset and retry once
+        with _default_sink_lock:
+            _default_sink = None
+        try:
+            sink = _get_default_sink()
+            sink.write(trace)
+        except Exception:
+            logger.warning(
+                "OpenFlux: failed to write trace to default sink", exc_info=True
+            )

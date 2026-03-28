@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from openflux._util import content_hash, generate_trace_id, utc_now
+from openflux._util import (
+    content_hash,
+    generate_trace_id,
+    utc_now,
+    write_trace_to_default_sink,
+)
 from openflux.schema import (
     ContextRecord,
     ContextType,
@@ -18,6 +24,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger("openflux")
 
 try:
     _HAS_ADK = importlib.util.find_spec("google.adk") is not None
@@ -82,57 +90,68 @@ class GoogleADKAdapter:
         return getattr(ctx, "agent_name", "") or "unknown"
 
     def _before_model(self, callback_context: Any, llm_request: Any) -> None:
-        sid = self._session_id_from_context(callback_context)
-        with self._lock:
-            acc = self._get_or_create(sid)
+        try:
+            sid = self._session_id_from_context(callback_context)
+            with self._lock:
+                acc = self._get_or_create(sid)
 
-        agent_name = getattr(callback_context, "agent_name", "")
-        if agent_name:
-            acc.agent_name = agent_name
+            agent_name = getattr(callback_context, "agent_name", "")
+            if agent_name:
+                acc.agent_name = agent_name
 
-        instructions = getattr(llm_request, "system_instruction", None)
-        if instructions:
-            text = _extract_text(instructions)
-            if text:
-                acc.context.append(
-                    ContextRecord(
-                        type=ContextType.SYSTEM_PROMPT,
-                        source=f"agent:{agent_name}",
-                        content_hash=content_hash(text),
-                        content=text,
-                        bytes=len(text.encode("utf-8")),
-                        timestamp=utc_now(),
+            instructions = getattr(llm_request, "system_instruction", None)
+            if instructions:
+                text = _extract_text(instructions)
+                if text:
+                    acc.context.append(
+                        ContextRecord(
+                            type=ContextType.SYSTEM_PROMPT,
+                            source=f"agent:{agent_name}",
+                            content_hash=content_hash(text),
+                            content=text,
+                            bytes=len(text.encode("utf-8")),
+                            timestamp=utc_now(),
+                        )
                     )
-                )
+        except Exception:
+            logger.warning("OpenFlux: error in before_model callback", exc_info=True)
 
     def _after_model(self, callback_context: Any, llm_response: Any) -> None:
-        sid = self._session_id_from_context(callback_context)
-        with self._lock:
-            acc = self._get_or_create(sid)
+        try:
+            sid = self._session_id_from_context(callback_context)
+            with self._lock:
+                acc = self._get_or_create(sid)
 
-        model = getattr(llm_response, "model", "") or ""
-        if model:
-            acc.model = model
+            model = getattr(llm_response, "model", "") or ""
+            if model:
+                acc.model = model
 
-        usage = getattr(llm_response, "usage_metadata", None)
-        if usage:
-            acc.token_usage.input_tokens += getattr(usage, "prompt_token_count", 0) or 0
-            acc.token_usage.output_tokens += (
-                getattr(usage, "candidates_token_count", 0) or 0
-            )
+            usage = getattr(llm_response, "usage_metadata", None)
+            if usage:
+                acc.token_usage.input_tokens += (
+                    getattr(usage, "prompt_token_count", 0) or 0
+                )
+                acc.token_usage.output_tokens += (
+                    getattr(usage, "candidates_token_count", 0) or 0
+                )
 
-        content = getattr(llm_response, "content", None)
-        if content:
-            _detect_handoffs(content, acc)
+            content = getattr(llm_response, "content", None)
+            if content:
+                _detect_handoffs(content, acc)
+        except Exception:
+            logger.warning("OpenFlux: error in after_model callback", exc_info=True)
 
     def _before_tool(self, tool: Any, args: dict[str, Any], tool_context: Any) -> None:
-        sid = self._session_id_from_context(tool_context)
-        with self._lock:
-            acc = self._get_or_create(sid)
+        try:
+            sid = self._session_id_from_context(tool_context)
+            with self._lock:
+                acc = self._get_or_create(sid)
 
-        call_id = getattr(tool_context, "function_call_id", "") or ""
-        if call_id:
-            acc._tool_starts[call_id] = utc_now()
+            call_id = getattr(tool_context, "function_call_id", "") or ""
+            if call_id:
+                acc._tool_starts[call_id] = utc_now()
+        except Exception:
+            logger.warning("OpenFlux: error in before_tool callback", exc_info=True)
 
     def _after_tool(
         self,
@@ -141,43 +160,46 @@ class GoogleADKAdapter:
         tool_context: Any,
         tool_response: Any,
     ) -> None:
-        sid = self._session_id_from_context(tool_context)
-        with self._lock:
-            acc = self._get_or_create(sid)
+        try:
+            sid = self._session_id_from_context(tool_context)
+            with self._lock:
+                acc = self._get_or_create(sid)
 
-        tool_name = getattr(tool, "name", "") or str(tool)
-        call_id = getattr(tool_context, "function_call_id", "") or ""
-        now = utc_now()
+            tool_name = getattr(tool, "name", "") or str(tool)
+            call_id = getattr(tool_context, "function_call_id", "") or ""
+            now = utc_now()
 
-        duration_ms = 0
-        if start := acc._tool_starts.pop(call_id, None):
-            try:
-                from datetime import datetime
+            duration_ms = 0
+            if start := acc._tool_starts.pop(call_id, None):
+                try:
+                    from datetime import datetime
 
-                s = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                e = datetime.fromisoformat(now.replace("Z", "+00:00"))
-                duration_ms = int((e - s).total_seconds() * 1000)
-            except (ValueError, TypeError):
-                pass
+                    s = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                    e = datetime.fromisoformat(now.replace("Z", "+00:00"))
+                    duration_ms = int((e - s).total_seconds() * 1000)
+                except (ValueError, TypeError):
+                    pass
 
-        args_str = json.dumps(args, default=str)[:4096] if args else ""
-        result_str = _serialize_tool_response(tool_response)
+            args_str = json.dumps(args, default=str)[:4096] if args else ""
+            result_str = _serialize_tool_response(tool_response)
 
-        if tool_name.lower() in self._search_tools:
-            acc.searches.append(
-                SearchRecord(query=args_str[:500], engine=tool_name, timestamp=now)
-            )
-        else:
-            acc.tools.append(
-                ToolRecord(
-                    name=tool_name,
-                    tool_input=args_str,
-                    tool_output=result_str[:16384],
-                    duration_ms=duration_ms,
-                    error=False,
-                    timestamp=now,
+            if tool_name.lower() in self._search_tools:
+                acc.searches.append(
+                    SearchRecord(query=args_str[:500], engine=tool_name, timestamp=now)
                 )
-            )
+            else:
+                acc.tools.append(
+                    ToolRecord(
+                        name=tool_name,
+                        tool_input=args_str,
+                        tool_output=result_str[:16384],
+                        duration_ms=duration_ms,
+                        error=False,
+                        timestamp=now,
+                    )
+                )
+        except Exception:
+            logger.warning("OpenFlux: error in after_tool callback", exc_info=True)
 
     def flush(self) -> list[Trace]:
         with self._lock:
@@ -218,14 +240,7 @@ class GoogleADKAdapter:
             return list(self._completed)
 
     def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            sink = SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+        write_trace_to_default_sink(trace)
 
 
 def create_adk_callbacks(

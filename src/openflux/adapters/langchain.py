@@ -1,12 +1,18 @@
 """LangChain / LangGraph adapter via BaseCallbackHandler."""
 
 import importlib.util
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from openflux._util import content_hash, generate_trace_id, utc_now
+from openflux._util import (
+    content_hash,
+    generate_trace_id,
+    utc_now,
+    write_trace_to_default_sink,
+)
 from openflux.schema import (
     ContextRecord,
     ContextType,
@@ -21,10 +27,12 @@ from openflux.schema import (
 
 _HAS_LANGCHAIN = importlib.util.find_spec("langchain_core") is not None
 
+logger = logging.getLogger("openflux")
+
 if _HAS_LANGCHAIN:
     from langchain_core.callbacks import (
         BaseCallbackHandler,
-)
+    )
 else:
     BaseCallbackHandler = object
 
@@ -108,12 +116,15 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        model = serialized.get("kwargs", {}).get("model_name", "")
-        if model:
-            root.model = model
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
+            )
+            model = serialized.get("kwargs", {}).get("model_name", "")
+            if model:
+                root.model = model
+        except Exception:
+            logger.warning("OpenFlux: error in on_llm_start callback", exc_info=True)
 
     def on_chat_model_start(
         self,
@@ -124,12 +135,17 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        model = serialized.get("kwargs", {}).get("model_name", "")
-        if model:
-            root.model = model
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
+            )
+            model = serialized.get("kwargs", {}).get("model_name", "")
+            if model:
+                root.model = model
+        except Exception:
+            logger.warning(
+                "OpenFlux: error in on_chat_model_start callback", exc_info=True
+            )
 
     def on_llm_end(
         self,
@@ -139,20 +155,25 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        llm_output: dict[str, Any] = getattr(response, "llm_output", None) or {}
-        token_usage: dict[str, Any] = llm_output.get("token_usage", {})
-        if token_usage:
-            root.token_usage.input_tokens += int(token_usage.get("prompt_tokens", 0))
-            root.token_usage.output_tokens += int(
-                token_usage.get("completion_tokens", 0)
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
             )
+            llm_output: dict[str, Any] = getattr(response, "llm_output", None) or {}
+            token_usage: dict[str, Any] = llm_output.get("token_usage", {})
+            if token_usage:
+                root.token_usage.input_tokens += int(
+                    token_usage.get("prompt_tokens", 0)
+                )
+                root.token_usage.output_tokens += int(
+                    token_usage.get("completion_tokens", 0)
+                )
 
-        model: str = str(llm_output.get("model_name", ""))
-        if model:
-            root.model = model
+            model: str = str(llm_output.get("model_name", ""))
+            if model:
+                root.model = model
+        except Exception:
+            logger.warning("OpenFlux: error in on_llm_end callback", exc_info=True)
 
     def on_tool_start(
         self,
@@ -163,12 +184,15 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        root.pending_tool_name = serialized.get("name", "")
-        root.pending_tool_input = str(input_str)[:4096]
-        root.pending_tool_timestamp = utc_now()
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
+            )
+            root.pending_tool_name = serialized.get("name", "")
+            root.pending_tool_input = str(input_str)[:4096]
+            root.pending_tool_timestamp = utc_now()
+        except Exception:
+            logger.warning("OpenFlux: error in on_tool_start callback", exc_info=True)
 
     def on_tool_end(
         self,
@@ -178,20 +202,23 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        root.tools.append(
-            ToolRecord(
-                name=root.pending_tool_name,
-                tool_input=root.pending_tool_input,
-                tool_output=str(output)[:16384],
-                timestamp=root.pending_tool_timestamp,
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
             )
-        )
-        root.pending_tool_name = ""
-        root.pending_tool_input = ""
-        root.pending_tool_timestamp = ""
+            root.tools.append(
+                ToolRecord(
+                    name=root.pending_tool_name,
+                    tool_input=root.pending_tool_input,
+                    tool_output=str(output)[:16384],
+                    timestamp=root.pending_tool_timestamp,
+                )
+            )
+            root.pending_tool_name = ""
+            root.pending_tool_input = ""
+            root.pending_tool_timestamp = ""
+        except Exception:
+            logger.warning("OpenFlux: error in on_tool_end callback", exc_info=True)
 
     def on_tool_error(
         self,
@@ -201,22 +228,25 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        root.tools.append(
-            ToolRecord(
-                name=root.pending_tool_name,
-                tool_input=root.pending_tool_input,
-                tool_output=str(error)[:16384],
-                error=True,
-                timestamp=root.pending_tool_timestamp,
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
             )
-        )
-        root.pending_tool_name = ""
-        root.pending_tool_input = ""
-        root.pending_tool_timestamp = ""
-        root.has_error = True
+            root.tools.append(
+                ToolRecord(
+                    name=root.pending_tool_name,
+                    tool_input=root.pending_tool_input,
+                    tool_output=str(error)[:16384],
+                    error=True,
+                    timestamp=root.pending_tool_timestamp,
+                )
+            )
+            root.pending_tool_name = ""
+            root.pending_tool_input = ""
+            root.pending_tool_timestamp = ""
+            root.has_error = True
+        except Exception:
+            logger.warning("OpenFlux: error in on_tool_error callback", exc_info=True)
 
     def on_retriever_start(
         self,
@@ -227,16 +257,21 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        root.searches.append(
-            SearchRecord(
-                query=query,
-                engine=serialized.get("name", "retriever"),
-                timestamp=utc_now(),
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
             )
-        )
+            root.searches.append(
+                SearchRecord(
+                    query=query,
+                    engine=serialized.get("name", "retriever"),
+                    timestamp=utc_now(),
+                )
+            )
+        except Exception:
+            logger.warning(
+                "OpenFlux: error in on_retriever_start callback", exc_info=True
+            )
 
     def on_retriever_end(
         self,
@@ -246,40 +281,53 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        if root.searches:
-            root.searches[-1].results_count = len(documents)
-
-        for doc in documents:
-            page_content: str = str(getattr(doc, "page_content", ""))
-            doc_metadata: dict[str, Any] = getattr(doc, "metadata", {})
-            source: str = str(doc_metadata.get("source", doc_metadata.get("url", "")))
-
-            root.sources.append(
-                SourceRecord(
-                    type=SourceType.DOCUMENT,
-                    path=source,
-                    content_hash=(content_hash(page_content) if page_content else ""),
-                    content=page_content[:4096],
-                    tool="retriever",
-                    bytes_read=(
-                        len(page_content.encode("utf-8")) if page_content else 0
-                    ),
-                    timestamp=utc_now(),
-                )
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
             )
+            if root.searches:
+                root.searches[-1].results_count = len(documents)
 
-            root.context.append(
-                ContextRecord(
-                    type=ContextType.RAG_CHUNK,
-                    source=source,
-                    content_hash=(content_hash(page_content) if page_content else ""),
-                    content=page_content[:4096],
-                    bytes=(len(page_content.encode("utf-8")) if page_content else 0),
-                    timestamp=utc_now(),
+            for doc in documents:
+                page_content: str = str(getattr(doc, "page_content", ""))
+                doc_metadata: dict[str, Any] = getattr(doc, "metadata", {})
+                source: str = str(
+                    doc_metadata.get("source", doc_metadata.get("url", ""))
                 )
+
+                root.sources.append(
+                    SourceRecord(
+                        type=SourceType.DOCUMENT,
+                        path=source,
+                        content_hash=(
+                            content_hash(page_content) if page_content else ""
+                        ),
+                        content=page_content[:4096],
+                        tool="retriever",
+                        bytes_read=(
+                            len(page_content.encode("utf-8")) if page_content else 0
+                        ),
+                        timestamp=utc_now(),
+                    )
+                )
+
+                root.context.append(
+                    ContextRecord(
+                        type=ContextType.RAG_CHUNK,
+                        source=source,
+                        content_hash=(
+                            content_hash(page_content) if page_content else ""
+                        ),
+                        content=page_content[:4096],
+                        bytes=(
+                            len(page_content.encode("utf-8")) if page_content else 0
+                        ),
+                        timestamp=utc_now(),
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "OpenFlux: error in on_retriever_end callback", exc_info=True
             )
 
     def on_agent_action(
@@ -290,13 +338,16 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        log: str = str(getattr(action, "log", ""))
-        if log:
-            reasoning: list[str] = root.metadata.setdefault("reasoning", [])
-            reasoning.append(log[:2000])
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
+            )
+            log: str = str(getattr(action, "log", ""))
+            if log:
+                reasoning: list[str] = root.metadata.setdefault("reasoning", [])
+                reasoning.append(log[:2000])
+        except Exception:
+            logger.warning("OpenFlux: error in on_agent_action callback", exc_info=True)
 
     def on_agent_finish(
         self,
@@ -306,15 +357,18 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        root = self._find_root_run(run_id) or self._get_or_create_run(
-            run_id, parent_run_id
-        )
-        return_values: dict[str, Any] = getattr(finish, "return_values", {})
-        output: str = str(return_values.get("output", ""))
-        if output:
-            root.decision = output[:4096]
+        try:
+            root = self._find_root_run(run_id) or self._get_or_create_run(
+                run_id, parent_run_id
+            )
+            return_values: dict[str, Any] = getattr(finish, "return_values", {})
+            output: str = str(return_values.get("output", ""))
+            if output:
+                root.decision = output[:4096]
 
-        self._flush_run(root)
+            self._flush_run(root)
+        except Exception:
+            logger.warning("OpenFlux: error in on_agent_finish callback", exc_info=True)
 
     def on_chain_start(
         self,
@@ -325,17 +379,20 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        acc = self._get_or_create_run(run_id, parent_run_id)
-        name = serialized.get("name", "")
-        if name and parent_run_id is not None:
-            root = self._find_root_run(run_id)
-            if root and root.scope is None:
-                root.scope = name
+        try:
+            acc = self._get_or_create_run(run_id, parent_run_id)
+            name = serialized.get("name", "")
+            if name and parent_run_id is not None:
+                root = self._find_root_run(run_id)
+                if root and root.scope is None:
+                    root.scope = name
 
-        if parent_run_id is None:
-            inp = inputs.get("input", inputs.get("question", ""))
-            if inp and not acc.task:
-                acc.task = str(inp)[:2000]
+            if parent_run_id is None:
+                inp = inputs.get("input", inputs.get("question", ""))
+                if inp and not acc.task:
+                    acc.task = str(inp)[:2000]
+        except Exception:
+            logger.warning("OpenFlux: error in on_chain_start callback", exc_info=True)
 
     def on_chain_end(
         self,
@@ -345,15 +402,18 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        key = str(run_id)
-        if key in self._top_level_runs:
-            with self._lock:
-                acc = self._runs.get(key)
-            if acc is not None:
-                output = outputs.get("output", outputs.get("answer", ""))
-                if output and not acc.decision:
-                    acc.decision = str(output)[:4096]
-                self._flush_run(acc)
+        try:
+            key = str(run_id)
+            if key in self._top_level_runs:
+                with self._lock:
+                    acc = self._runs.get(key)
+                if acc is not None:
+                    output = outputs.get("output", outputs.get("answer", ""))
+                    if output and not acc.decision:
+                        acc.decision = str(output)[:4096]
+                    self._flush_run(acc)
+        except Exception:
+            logger.warning("OpenFlux: error in on_chain_end callback", exc_info=True)
 
     def on_chain_error(
         self,
@@ -363,11 +423,14 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        key = str(run_id)
-        with self._lock:
-            acc = self._runs.get(key)
-        if acc is not None:
-            acc.has_error = True
+        try:
+            key = str(run_id)
+            with self._lock:
+                acc = self._runs.get(key)
+            if acc is not None:
+                acc.has_error = True
+        except Exception:
+            logger.warning("OpenFlux: error in on_chain_error callback", exc_info=True)
 
     def _flush_run(self, acc: _RunAccumulator) -> None:
         trace = self._build_trace(acc)
@@ -405,14 +468,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         )
 
     def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            sink = SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+        write_trace_to_default_sink(trace)
 
     @property
     def completed_traces(self) -> list[Trace]:

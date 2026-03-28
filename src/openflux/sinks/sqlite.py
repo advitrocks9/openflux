@@ -12,7 +12,7 @@ from openflux.sinks.base import Sink
 
 _DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -88,17 +88,22 @@ CREATE TABLE IF NOT EXISTS trace_tools (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS traces_fts USING fts5(
     task, decision, correction, scope,
+    agent, model, session_id, files_modified,
     content=traces, content_rowid=rowid
 );
 
 CREATE TRIGGER IF NOT EXISTS traces_fts_insert AFTER INSERT ON traces BEGIN
-    INSERT INTO traces_fts(rowid, task, decision, correction, scope)
-    VALUES (new.rowid, new.task, new.decision, new.correction, new.scope);
+    INSERT INTO traces_fts(rowid, task, decision, correction, scope,
+                           agent, model, session_id, files_modified)
+    VALUES (new.rowid, new.task, new.decision, new.correction, new.scope,
+            new.agent, new.model, new.session_id, new.files_modified);
 END;
 
 CREATE TRIGGER IF NOT EXISTS traces_fts_delete AFTER DELETE ON traces BEGIN
-    INSERT INTO traces_fts(traces_fts, rowid, task, decision, correction, scope)
-    VALUES ('delete', old.rowid, old.task, old.decision, old.correction, old.scope);
+    INSERT INTO traces_fts(traces_fts, rowid, task, decision, correction, scope,
+                           agent, model, session_id, files_modified)
+    VALUES ('delete', old.rowid, old.task, old.decision, old.correction, old.scope,
+            old.agent, old.model, old.session_id, old.files_modified);
 END;
 
 CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
@@ -154,16 +159,59 @@ class SQLiteSink(Sink):
             "SELECT name FROM sqlite_master"
             " WHERE type='table' AND name='schema_version'"
         )
+        current_version = 0
         if cur.fetchone():
             row = cur.execute("SELECT MAX(version) FROM schema_version").fetchone()
-            if row and row[0] and row[0] >= _SCHEMA_VERSION:
+            current_version = (row[0] or 0) if row else 0
+            if current_version >= _SCHEMA_VERSION:
                 return
-        self._conn.executescript(_SCHEMA_SQL)
+
+        if current_version < 1:
+            self._conn.executescript(_SCHEMA_SQL)
+        if current_version == 1:
+            self._migrate_fts_v2()
+
         self._conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
             (_SCHEMA_VERSION,),
         )
         self._conn.commit()
+
+    def _migrate_fts_v2(self) -> None:
+        """Upgrade FTS index from v1 (4 fields) to v2 (8 fields)."""
+        self._conn.executescript("""
+            DROP TRIGGER IF EXISTS traces_fts_insert;
+            DROP TRIGGER IF EXISTS traces_fts_delete;
+            DROP TABLE IF EXISTS traces_fts;
+
+            CREATE VIRTUAL TABLE traces_fts USING fts5(
+                task, decision, correction, scope,
+                agent, model, session_id, files_modified,
+                content=traces, content_rowid=rowid
+            );
+
+            CREATE TRIGGER traces_fts_insert AFTER INSERT ON traces BEGIN
+                INSERT INTO traces_fts(rowid, task, decision, correction, scope,
+                                       agent, model, session_id, files_modified)
+                VALUES (new.rowid, new.task, new.decision, new.correction, new.scope,
+                        new.agent, new.model, new.session_id, new.files_modified);
+            END;
+
+            CREATE TRIGGER traces_fts_delete AFTER DELETE ON traces BEGIN
+                INSERT INTO traces_fts(traces_fts, rowid, task, decision, correction,
+                                       scope, agent, model, session_id, files_modified)
+                VALUES ('delete', old.rowid, old.task, old.decision, old.correction,
+                        old.scope, old.agent, old.model, old.session_id,
+                        old.files_modified);
+            END;
+        """)
+        # Rebuild FTS index for pre-existing rows
+        self._conn.execute(
+            "INSERT INTO traces_fts(rowid, task, decision, correction, scope, "
+            "agent, model, session_id, files_modified) "
+            "SELECT rowid, task, decision, correction, scope, "
+            "agent, model, session_id, files_modified FROM traces"
+        )
 
     @override
     def write(self, trace: Trace) -> None:

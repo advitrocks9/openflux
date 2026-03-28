@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from openflux._util import (
     generate_session_id,
     generate_trace_id,
     utc_now,
+    write_trace_to_default_sink,
 )
 from openflux.schema import (
     SourceRecord,
@@ -24,6 +26,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger("openflux")
 
 _HAS_CREWAI = importlib.util.find_spec("crewai") is not None
 
@@ -41,7 +45,7 @@ if _HAS_CREWAI:
         ToolUsageErrorEvent,
         ToolUsageFinishedEvent,
         ToolUsageStartedEvent,
-)
+    )
 else:
     BaseEventListener = object
 
@@ -88,176 +92,231 @@ class OpenFluxCrewListener(BaseEventListener):
     def setup_listeners(self, crewai_event_bus: Any) -> None:
         @crewai_event_bus.on(CrewKickoffStartedEvent)
         def _on_crew_started(source: Any, event: Any) -> None:
-            self._crew_name = getattr(event, "crew_name", "")
-            self._crew_started_at = utc_now()
-            self._session_id = generate_session_id()
+            try:
+                self._crew_name = getattr(event, "crew_name", "")
+                self._crew_started_at = utc_now()
+                self._session_id = generate_session_id()
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in crew_started callback", exc_info=True
+                )
 
         @crewai_event_bus.on(CrewKickoffCompletedEvent)
         def _on_crew_completed(source: Any, event: Any) -> None:
-            self._flush_remaining()
+            try:
+                self._flush_remaining()
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in crew_completed callback", exc_info=True
+                )
 
         @crewai_event_bus.on(AgentExecutionStartedEvent)
         def _on_agent_started(source: Any, event: Any) -> None:
-            agent_obj = getattr(event, "agent", None)
-            role = getattr(agent_obj, "role", "") if agent_obj else ""
-            task_key = self._current_task_key()
-            if task_key and role:
-                with self._lock:
-                    self._agent_task[role] = task_key
-                    acc = self._tasks.get(task_key)
-                    if acc and not acc.agent_role:
-                        acc.agent_role = role
+            try:
+                agent_obj = getattr(event, "agent", None)
+                role = getattr(agent_obj, "role", "") if agent_obj else ""
+                task_key = self._current_task_key()
+                if task_key and role:
+                    with self._lock:
+                        self._agent_task[role] = task_key
+                        acc = self._tasks.get(task_key)
+                        if acc and not acc.agent_role:
+                            acc.agent_role = role
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in agent_started callback", exc_info=True
+                )
 
         @crewai_event_bus.on(AgentExecutionCompletedEvent)
         def _on_agent_completed(source: Any, event: Any) -> None:
-            agent_obj = getattr(event, "agent", None)
-            role = getattr(agent_obj, "role", "") if agent_obj else ""
-            output = str(getattr(event, "output", ""))[:4096]
-            acc = self._find_acc_for_agent(role)
-            if acc and output and not acc.decision:
-                acc.decision = output
+            try:
+                agent_obj = getattr(event, "agent", None)
+                role = getattr(agent_obj, "role", "") if agent_obj else ""
+                output = str(getattr(event, "output", ""))[:4096]
+                acc = self._find_acc_for_agent(role)
+                if acc and output and not acc.decision:
+                    acc.decision = output
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in agent_completed callback", exc_info=True
+                )
 
         @crewai_event_bus.on(TaskStartedEvent)
         def _on_task_started(source: Any, event: Any) -> None:
-            task_obj = getattr(event, "task", None)
-            task_key = self._task_key(task_obj)
-            description = (
-                getattr(task_obj, "description", "")[:2000] if task_obj else ""
-            )
-            with self._lock:
-                if task_key not in self._tasks:
-                    self._tasks[task_key] = _TaskAccumulator(
-                        task_id=task_key,
-                        started_at=utc_now(),
-                        task_description=description,
-                    )
+            try:
+                task_obj = getattr(event, "task", None)
+                task_key = self._task_key(task_obj)
+                description = (
+                    getattr(task_obj, "description", "")[:2000] if task_obj else ""
+                )
+                with self._lock:
+                    if task_key not in self._tasks:
+                        self._tasks[task_key] = _TaskAccumulator(
+                            task_id=task_key,
+                            started_at=utc_now(),
+                            task_description=description,
+                        )
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in task_started callback", exc_info=True
+                )
 
         @crewai_event_bus.on(TaskCompletedEvent)
         def _on_task_completed(source: Any, event: Any) -> None:
-            task_obj = getattr(event, "task", None)
-            task_key = self._task_key(task_obj)
-            output = str(getattr(event, "output", ""))[:4096]
-            with self._lock:
-                acc = self._tasks.get(task_key)
-            if acc is not None:
-                if output and not acc.decision:
-                    acc.decision = output
-                self._flush_task(acc)
+            try:
+                task_obj = getattr(event, "task", None)
+                task_key = self._task_key(task_obj)
+                output = str(getattr(event, "output", ""))[:4096]
+                with self._lock:
+                    acc = self._tasks.get(task_key)
+                if acc is not None:
+                    if output and not acc.decision:
+                        acc.decision = output
+                    self._flush_task(acc)
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in task_completed callback", exc_info=True
+                )
 
         @crewai_event_bus.on(LLMCallStartedEvent)
         def _on_llm_started(source: Any, event: Any) -> None:
-            acc = self._current_acc()
-            if acc is not None:
-                acc.llm_call_count += 1
+            try:
+                acc = self._current_acc()
+                if acc is not None:
+                    acc.llm_call_count += 1
+            except Exception:
+                logger.warning("OpenFlux: error in llm_started callback", exc_info=True)
 
         @crewai_event_bus.on(LLMCallCompletedEvent)
         def _on_llm_completed(source: Any, event: Any) -> None:
-            acc = self._current_acc()
-            if acc is None:
-                return
-            usage = getattr(event, "usage", None) or getattr(event, "token_usage", None)
-            if usage:
-                if isinstance(usage, dict):
-                    acc.token_usage.input_tokens += usage.get(
-                        "prompt_tokens", 0
-                    ) or usage.get("input_tokens", 0)
-                    acc.token_usage.output_tokens += usage.get(
-                        "completion_tokens", 0
-                    ) or usage.get("output_tokens", 0)
-                else:
-                    acc.token_usage.input_tokens += getattr(
-                        usage, "prompt_tokens", 0
-                    ) or getattr(usage, "input_tokens", 0)
-                    acc.token_usage.output_tokens += getattr(
-                        usage, "completion_tokens", 0
-                    ) or getattr(usage, "output_tokens", 0)
+            try:
+                acc = self._current_acc()
+                if acc is None:
+                    return
+                usage = getattr(event, "usage", None) or getattr(
+                    event, "token_usage", None
+                )
+                if usage:
+                    if isinstance(usage, dict):
+                        acc.token_usage.input_tokens += usage.get(
+                            "prompt_tokens", 0
+                        ) or usage.get("input_tokens", 0)
+                        acc.token_usage.output_tokens += usage.get(
+                            "completion_tokens", 0
+                        ) or usage.get("output_tokens", 0)
+                    else:
+                        acc.token_usage.input_tokens += getattr(
+                            usage, "prompt_tokens", 0
+                        ) or getattr(usage, "input_tokens", 0)
+                        acc.token_usage.output_tokens += getattr(
+                            usage, "completion_tokens", 0
+                        ) or getattr(usage, "output_tokens", 0)
 
-            model = getattr(event, "model", "") or getattr(event, "model_name", "")
-            if model:
-                acc.model = str(model)
+                model = getattr(event, "model", "") or getattr(event, "model_name", "")
+                if model:
+                    acc.model = str(model)
 
-            response = getattr(event, "response", None)
-            if response:
-                text = str(response)[:4096]
-                acc.sources.append(
-                    SourceRecord(
-                        type=SourceType.API,
-                        path=f"llm/{acc.model or 'unknown'}",
-                        content_hash=content_hash(text),
-                        content=text,
-                        tool="llm",
-                        bytes_read=len(text.encode("utf-8")),
-                        timestamp=utc_now(),
+                response = getattr(event, "response", None)
+                if response:
+                    text = str(response)[:4096]
+                    acc.sources.append(
+                        SourceRecord(
+                            type=SourceType.API,
+                            path=f"llm/{acc.model or 'unknown'}",
+                            content_hash=content_hash(text),
+                            content=text,
+                            tool="llm",
+                            bytes_read=len(text.encode("utf-8")),
+                            timestamp=utc_now(),
+                        )
                     )
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in llm_completed callback", exc_info=True
                 )
 
         @crewai_event_bus.on(ToolUsageStartedEvent)
         def _on_tool_started(source: Any, event: Any) -> None:
-            acc = self._current_acc()
-            if acc is None:
-                return
-            tool_name = getattr(event, "tool_name", "") or getattr(event, "name", "")
-            tool_args = getattr(event, "tool_args", "") or getattr(
-                event, "arguments", ""
-            )
-            if isinstance(tool_args, dict):
-                tool_args = json.dumps(tool_args, default=str)
-            acc._pending_tool_name = str(tool_name)
-            acc._pending_tool_input = str(tool_args)[:4096]
-            acc._pending_tool_timestamp = utc_now()
-            acc._pending_tool_start_ns = time.monotonic_ns()
+            try:
+                acc = self._current_acc()
+                if acc is None:
+                    return
+                tool_name = getattr(event, "tool_name", "") or getattr(
+                    event, "name", ""
+                )
+                tool_args = getattr(event, "tool_args", "") or getattr(
+                    event, "arguments", ""
+                )
+                if isinstance(tool_args, dict):
+                    tool_args = json.dumps(tool_args, default=str)
+                acc._pending_tool_name = str(tool_name)
+                acc._pending_tool_input = str(tool_args)[:4096]
+                acc._pending_tool_timestamp = utc_now()
+                acc._pending_tool_start_ns = time.monotonic_ns()
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in tool_started callback", exc_info=True
+                )
 
         @crewai_event_bus.on(ToolUsageFinishedEvent)
         def _on_tool_finished(source: Any, event: Any) -> None:
-            acc = self._current_acc()
-            if acc is None:
-                return
-            result = str(getattr(event, "result", ""))[:16384]
-            duration_ms = 0
-            if acc._pending_tool_start_ns:
-                duration_ms = (
-                    time.monotonic_ns() - acc._pending_tool_start_ns
-                ) // 1_000_000
-            acc.tools.append(
-                ToolRecord(
-                    name=acc._pending_tool_name,
-                    tool_input=acc._pending_tool_input,
-                    tool_output=result,
-                    duration_ms=duration_ms,
-                    timestamp=acc._pending_tool_timestamp,
+            try:
+                acc = self._current_acc()
+                if acc is None:
+                    return
+                result = str(getattr(event, "result", ""))[:16384]
+                duration_ms = 0
+                if acc._pending_tool_start_ns:
+                    duration_ms = (
+                        time.monotonic_ns() - acc._pending_tool_start_ns
+                    ) // 1_000_000
+                acc.tools.append(
+                    ToolRecord(
+                        name=acc._pending_tool_name,
+                        tool_input=acc._pending_tool_input,
+                        tool_output=result,
+                        duration_ms=duration_ms,
+                        timestamp=acc._pending_tool_timestamp,
+                    )
                 )
-            )
-            acc._pending_tool_name = ""
-            acc._pending_tool_input = ""
-            acc._pending_tool_timestamp = ""
-            acc._pending_tool_start_ns = 0
+                acc._pending_tool_name = ""
+                acc._pending_tool_input = ""
+                acc._pending_tool_timestamp = ""
+                acc._pending_tool_start_ns = 0
+            except Exception:
+                logger.warning(
+                    "OpenFlux: error in tool_finished callback", exc_info=True
+                )
 
         @crewai_event_bus.on(ToolUsageErrorEvent)
         def _on_tool_error(source: Any, event: Any) -> None:
-            acc = self._current_acc()
-            if acc is None:
-                return
-            error_msg = str(getattr(event, "error", ""))[:16384]
-            duration_ms = 0
-            if acc._pending_tool_start_ns:
-                duration_ms = (
-                    time.monotonic_ns() - acc._pending_tool_start_ns
-                ) // 1_000_000
-            acc.tools.append(
-                ToolRecord(
-                    name=acc._pending_tool_name,
-                    tool_input=acc._pending_tool_input,
-                    tool_output=error_msg,
-                    duration_ms=duration_ms,
-                    error=True,
-                    timestamp=acc._pending_tool_timestamp,
+            try:
+                acc = self._current_acc()
+                if acc is None:
+                    return
+                error_msg = str(getattr(event, "error", ""))[:16384]
+                duration_ms = 0
+                if acc._pending_tool_start_ns:
+                    duration_ms = (
+                        time.monotonic_ns() - acc._pending_tool_start_ns
+                    ) // 1_000_000
+                acc.tools.append(
+                    ToolRecord(
+                        name=acc._pending_tool_name,
+                        tool_input=acc._pending_tool_input,
+                        tool_output=error_msg,
+                        duration_ms=duration_ms,
+                        error=True,
+                        timestamp=acc._pending_tool_timestamp,
+                    )
                 )
-            )
-            acc._pending_tool_name = ""
-            acc._pending_tool_input = ""
-            acc._pending_tool_timestamp = ""
-            acc._pending_tool_start_ns = 0
-            acc.has_error = True
+                acc._pending_tool_name = ""
+                acc._pending_tool_input = ""
+                acc._pending_tool_timestamp = ""
+                acc._pending_tool_start_ns = 0
+                acc.has_error = True
+            except Exception:
+                logger.warning("OpenFlux: error in tool_error callback", exc_info=True)
 
     def _task_key(self, task_obj: Any) -> str:
         task_id = getattr(task_obj, "id", None)
@@ -340,14 +399,7 @@ class OpenFluxCrewListener(BaseEventListener):
         )
 
     def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            sink = SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+        write_trace_to_default_sink(trace)
 
     @property
     def completed_traces(self) -> list[Trace]:
