@@ -520,13 +520,9 @@ END;
 
         sink = SQLiteSink(path=db)
 
-        # BUG: Pre-existing rows from v1 are NOT re-indexed into the new FTS table.
-        # The _migrate_fts_v2 method drops and recreates the FTS table + triggers,
-        # but does not rebuild the index (missing INSERT INTO traces_fts SELECT ...).
-        # As a result, searches for v1 data return empty results.
-        # Only new inserts after migration are indexed.
+        # Migration rebuilds the FTS index for pre-existing rows
         results = sink.search("migration")
-        assert len(results) == 0  # would be 1 if migration rebuilt the index
+        assert len(results) == 1
 
         # Verify new inserts ARE indexed with expanded columns (v2 feature)
         sink.write(make_trace(agent="post-migration-agent", task="new task"))
