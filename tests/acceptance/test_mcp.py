@@ -1,4 +1,4 @@
-"""MCP acceptance test — proves the MCP server adapter works exactly as a user would use it."""
+"""MCP acceptance test - proves the MCP server adapter works exactly as a user would use it."""
 
 import asyncio
 

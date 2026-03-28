@@ -228,7 +228,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             if model:
                 root.model = model
         except Exception:
-            logger.warning("OpenFlux: error in on_llm_start callback", exc_info=True)
+            logger.warning("on_llm_start callback", exc_info=True)
 
     def on_chat_model_start(
         self,
@@ -248,7 +248,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                 root.model = model
         except Exception:
             logger.warning(
-                "OpenFlux: error in on_chat_model_start callback", exc_info=True
+                "on_chat_model_start callback", exc_info=True
             )
 
         # Also check invocation_params (used by some providers like Google)
@@ -305,7 +305,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             if model:
                 root.model = model
         except Exception:
-            logger.warning("OpenFlux: error in on_llm_end callback", exc_info=True)
+            logger.warning("on_llm_end callback", exc_info=True)
 
         # Fallback: model from generation_info (Google providers)
         if not root.model:
@@ -408,7 +408,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             root.pending_tool_input = str(input_str)[:4096]
             root.pending_tool_timestamp = utc_now()
         except Exception:
-            logger.warning("OpenFlux: error in on_tool_start callback", exc_info=True)
+            logger.warning("on_tool_start callback", exc_info=True)
 
     def on_tool_end(
         self,
@@ -434,7 +434,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             root.pending_tool_input = ""
             root.pending_tool_timestamp = ""
         except Exception:
-            logger.warning("OpenFlux: error in on_tool_end callback", exc_info=True)
+            logger.warning("on_tool_end callback", exc_info=True)
 
     def on_tool_error(
         self,
@@ -462,7 +462,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             root.pending_tool_timestamp = ""
             root.has_error = True
         except Exception:
-            logger.warning("OpenFlux: error in on_tool_error callback", exc_info=True)
+            logger.warning("on_tool_error callback", exc_info=True)
 
     def on_retriever_start(
         self,
@@ -486,7 +486,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             )
         except Exception:
             logger.warning(
-                "OpenFlux: error in on_retriever_start callback", exc_info=True
+                "on_retriever_start callback", exc_info=True
             )
 
     def on_retriever_end(
@@ -543,7 +543,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                 )
         except Exception:
             logger.warning(
-                "OpenFlux: error in on_retriever_end callback", exc_info=True
+                "on_retriever_end callback", exc_info=True
             )
 
     def on_agent_action(
@@ -563,7 +563,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                 reasoning: list[str] = root.metadata.setdefault("reasoning", [])
                 reasoning.append(log[:2000])
         except Exception:
-            logger.warning("OpenFlux: error in on_agent_action callback", exc_info=True)
+            logger.warning("on_agent_action callback", exc_info=True)
 
     def on_agent_finish(
         self,
@@ -584,7 +584,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
 
             self._flush_run(root)
         except Exception:
-            logger.warning("OpenFlux: error in on_agent_finish callback", exc_info=True)
+            logger.warning("on_agent_finish callback", exc_info=True)
 
     def on_chain_start(
         self,
@@ -608,7 +608,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                 if inp and not acc.task:
                     acc.task = str(inp)[:2000]
         except Exception:
-            logger.warning("OpenFlux: error in on_chain_start callback", exc_info=True)
+            logger.warning("on_chain_start callback", exc_info=True)
 
     def on_chain_end(
         self,
@@ -629,7 +629,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                         acc.decision = str(output)[:4096]
                     self._flush_run(acc)
         except Exception:
-            logger.warning("OpenFlux: error in on_chain_end callback", exc_info=True)
+            logger.warning("on_chain_end callback", exc_info=True)
 
     def on_chain_error(
         self,
@@ -646,7 +646,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             if acc is not None:
                 acc.has_error = True
         except Exception:
-            logger.warning("OpenFlux: error in on_chain_error callback", exc_info=True)
+            logger.warning("on_chain_error callback", exc_info=True)
 
     @staticmethod
     def _extract_path_from_input(tool_input: str) -> str:

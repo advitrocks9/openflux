@@ -1,4 +1,4 @@
-"""Bedrock acceptance test — simulated event streams, exactly how a real user feeds boto3 data."""
+"""Bedrock acceptance test - simulated event streams, exactly how a real user feeds boto3 data."""
 
 import pytest
 from helpers import check_trace
@@ -16,7 +16,7 @@ def db_path(tmp_path):
 def _make_full_event_stream():
     """Build a realistic Bedrock InvokeAgent event stream with all trace types."""
     return [
-        # 1. Preprocessing — system prompt + model invocation
+        # 1. Preprocessing - system prompt + model invocation
         {
             "trace": {
                 "agentId": "AGENT123",
@@ -42,7 +42,7 @@ def _make_full_event_stream():
                 },
             }
         },
-        # 2. Orchestration — KB lookup (search + source)
+        # 2. Orchestration - KB lookup (search + source)
         {
             "trace": {
                 "agentId": "AGENT123",
@@ -99,7 +99,7 @@ def _make_full_event_stream():
                 },
             }
         },
-        # 3. Orchestration — action group invocation (tool)
+        # 3. Orchestration - action group invocation (tool)
         {
             "trace": {
                 "agentId": "AGENT123",
@@ -136,7 +136,7 @@ def _make_full_event_stream():
                 },
             }
         },
-        # 4. Orchestration — collaborator (sub-agent)
+        # 4. Orchestration - collaborator (sub-agent)
         {
             "trace": {
                 "agentId": "AGENT123",
@@ -172,7 +172,7 @@ def _make_full_event_stream():
                 },
             }
         },
-        # 5. Orchestration — REPROMPT (correction)
+        # 5. Orchestration - REPROMPT (correction)
         {
             "trace": {
                 "agentId": "AGENT123",
@@ -207,7 +207,7 @@ def _make_full_event_stream():
                 },
             }
         },
-        # 6. Postprocessing — final answer (decision)
+        # 6. Postprocessing - final answer (decision)
         {
             "trace": {
                 "agentId": "AGENT123",

@@ -152,7 +152,7 @@ class GoogleADKAdapter:
                         )
                     )
         except Exception:
-            logger.warning("OpenFlux: error in before_model callback", exc_info=True)
+            logger.warning("before_model callback", exc_info=True)
 
     def _after_model(self, callback_context: Any, llm_response: Any) -> None:
         try:
@@ -177,7 +177,7 @@ class GoogleADKAdapter:
             if content:
                 _detect_handoffs(content, acc)
         except Exception:
-            logger.warning("OpenFlux: error in after_model callback", exc_info=True)
+            logger.warning("after_model callback", exc_info=True)
 
     def _before_tool(self, tool: Any, args: dict[str, Any], tool_context: Any) -> None:
         try:
@@ -189,7 +189,7 @@ class GoogleADKAdapter:
             if call_id:
                 acc._tool_starts[call_id] = utc_now()
         except Exception:
-            logger.warning("OpenFlux: error in before_tool callback", exc_info=True)
+            logger.warning("before_tool callback", exc_info=True)
 
     def _after_tool(
         self,
@@ -237,7 +237,7 @@ class GoogleADKAdapter:
                     )
                 )
         except Exception:
-            logger.warning("OpenFlux: error in after_tool callback", exc_info=True)
+            logger.warning("after_tool callback", exc_info=True)
 
     def flush(self) -> list[Trace]:
         with self._lock:

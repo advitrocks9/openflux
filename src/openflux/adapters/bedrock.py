@@ -347,7 +347,7 @@ class BedrockAdapter:
                 types (preProcessingTrace, orchestrationTrace, etc.).
             session_id: Session ID for trace continuity. Auto-generated if omitted.
             task: The user's input text. Bedrock traces don't include the original
-                query — caller must provide it.
+                query - caller must provide it.
             scope: Category/scope label. Not available from Bedrock natively —
                 caller must provide it.
             tags: User-defined tags. Auto-derived tags are appended automatically.

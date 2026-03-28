@@ -117,7 +117,7 @@ class OpenFluxCrewListener(BaseEventListener):
         super().__init__()
 
     def setup_listeners(self, crewai_event_bus: Any) -> None:
-        # Guard against double registration — BaseEventListener.__init__
+        # Guard against double registration - BaseEventListener.__init__
         # calls setup_listeners automatically, and users may call it again.
         if self._listeners_registered:
             return
@@ -131,7 +131,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 self._session_id = generate_session_id()
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in crew_started callback", exc_info=True
+                    "crew_started callback", exc_info=True
                 )
 
         @crewai_event_bus.on(CrewKickoffCompletedEvent)
@@ -140,7 +140,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 self._flush_remaining()
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in crew_completed callback", exc_info=True
+                    "crew_completed callback", exc_info=True
                 )
 
         @crewai_event_bus.on(AgentExecutionStartedEvent)
@@ -157,7 +157,7 @@ class OpenFluxCrewListener(BaseEventListener):
                             acc.agent_role = role
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in agent_started callback", exc_info=True
+                    "agent_started callback", exc_info=True
                 )
 
         @crewai_event_bus.on(AgentExecutionCompletedEvent)
@@ -171,7 +171,7 @@ class OpenFluxCrewListener(BaseEventListener):
                     acc.decision = output
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in agent_completed callback", exc_info=True
+                    "agent_completed callback", exc_info=True
                 )
 
         @crewai_event_bus.on(TaskStartedEvent)
@@ -191,7 +191,7 @@ class OpenFluxCrewListener(BaseEventListener):
                         )
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in task_started callback", exc_info=True
+                    "task_started callback", exc_info=True
                 )
 
         @crewai_event_bus.on(TaskCompletedEvent)
@@ -208,7 +208,7 @@ class OpenFluxCrewListener(BaseEventListener):
                     self._flush_task(acc)
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in task_completed callback", exc_info=True
+                    "task_completed callback", exc_info=True
                 )
 
         @crewai_event_bus.on(LLMCallStartedEvent)
@@ -218,7 +218,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 if acc is not None:
                     acc.llm_call_count += 1
             except Exception:
-                logger.warning("OpenFlux: error in llm_started callback", exc_info=True)
+                logger.warning("llm_started callback", exc_info=True)
 
         @crewai_event_bus.on(LLMCallCompletedEvent)
         def _on_llm_completed(source: Any, event: Any) -> None:
@@ -265,7 +265,7 @@ class OpenFluxCrewListener(BaseEventListener):
                     )
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in llm_completed callback", exc_info=True
+                    "llm_completed callback", exc_info=True
                 )
 
         @crewai_event_bus.on(ToolUsageStartedEvent)
@@ -288,7 +288,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 acc._pending_tool_start_ns = time.monotonic_ns()
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in tool_started callback", exc_info=True
+                    "tool_started callback", exc_info=True
                 )
 
         @crewai_event_bus.on(ToolUsageFinishedEvent)
@@ -318,7 +318,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 acc._pending_tool_start_ns = 0
             except Exception:
                 logger.warning(
-                    "OpenFlux: error in tool_finished callback", exc_info=True
+                    "tool_finished callback", exc_info=True
                 )
 
         @crewai_event_bus.on(ToolUsageErrorEvent)
@@ -349,7 +349,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 acc._pending_tool_start_ns = 0
                 acc.has_error = True
             except Exception:
-                logger.warning("OpenFlux: error in tool_error callback", exc_info=True)
+                logger.warning("tool_error callback", exc_info=True)
 
         # Knowledge retrieval -> SearchRecord
         if KnowledgeRetrievalCompletedEvent is not None:

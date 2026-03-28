@@ -713,7 +713,7 @@ def _extract_user_text(message: dict[str, Any]) -> str:
     content = message.get("content", "")
     if isinstance(content, str):
         return content
-    # Content blocks array — concatenate text blocks
+    # Content blocks array - concatenate text blocks
     parts: list[str] = []
     for block in content:
         if isinstance(block, dict) and block.get("type") == "text":
@@ -798,7 +798,7 @@ def _parse_transcript(path: Path) -> TranscriptData:
                     _accumulate_usage(usage, token_totals)
                 text = _extract_assistant_text(msg)
                 if text:
-                    # Keep updating — we want the last one
+                    # Keep updating - we want the last one
                     data.decision = truncate_content(text, _DECISION_MAX)
 
             # System messages carry context (system prompts, reminders)

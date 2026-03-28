@@ -108,7 +108,7 @@ class AutoGenStreamConsumer:
                 case "TaskResult":
                     self._handle_task_result(message)
         except Exception:
-            logger.warning("OpenFlux: error in process callback", exc_info=True)
+            logger.warning("process callback", exc_info=True)
 
     def flush(self) -> Trace | None:
         with self._lock:

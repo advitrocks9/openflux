@@ -103,7 +103,7 @@ def test_google_adk_full_telemetry(tmp_path):
         "metadata",
         "schema_version",
     ]
-    # searches depends on model calling search_web — non-deterministic
+    # searches depends on model calling search_web - non-deterministic
     na = ["parent_id", "correction", "files_modified", "searches"]
 
     trace, coverage = check_trace(db_path, required=required, na=na)

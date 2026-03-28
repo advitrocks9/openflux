@@ -143,7 +143,7 @@ class ClaudeAgentSDKAdapter:
         try:
             self._record_tool(input_data, error=False)
         except Exception:
-            logger.warning("OpenFlux: error in post_tool_use hook", exc_info=True)
+            logger.warning("post_tool_use hook", exc_info=True)
         return {}
 
     async def _on_post_tool_use_failure(
@@ -156,7 +156,7 @@ class ClaudeAgentSDKAdapter:
             self._record_tool(input_data, error=True)
         except Exception:
             logger.warning(
-                "OpenFlux: error in post_tool_use_failure hook", exc_info=True
+                "post_tool_use_failure hook", exc_info=True
             )
         return {}
 
@@ -179,7 +179,7 @@ class ClaudeAgentSDKAdapter:
                     }
                 )
         except Exception:
-            logger.warning("OpenFlux: error in subagent_start hook", exc_info=True)
+            logger.warning("subagent_start hook", exc_info=True)
         return {}
 
     async def _on_subagent_stop(
@@ -234,7 +234,7 @@ class ClaudeAgentSDKAdapter:
             else:
                 self._write_default_sink(trace)
         except Exception:
-            logger.warning("OpenFlux: error in stop hook", exc_info=True)
+            logger.warning("stop hook", exc_info=True)
 
         return {}
 
@@ -360,7 +360,7 @@ class ClaudeAgentSDKAdapter:
                 if status is not None:
                     trace.status = status
             else:
-                # Stop hook hasn't fired yet — store on accumulator
+                # Stop hook hasn't fired yet - store on accumulator
                 acc = self._get_or_create(session_id)
                 acc.token_usage = token_usage
                 if model:
@@ -389,7 +389,7 @@ class ClaudeAgentSDKAdapter:
         if acc.tool_errors_count:
             metadata["tool_errors_count"] = acc.tool_errors_count
 
-        # Tool failures alone don't mark the trace as ERROR — only explicit status does
+        # Tool failures alone don't mark the trace as ERROR - only explicit status does
         status = acc.status if acc.status is not None else Status.COMPLETED
 
         # Attach system prompt so context field is populated

@@ -1,4 +1,4 @@
-"""Claude Code acceptance test — hooks-only, no API key needed.
+"""Claude Code acceptance test - hooks-only, no API key needed.
 
 Simulates exactly what Claude Code does: subprocess calls with JSON on stdin.
 Also tests transcript parsing with a synthetic JSONL file.
@@ -63,7 +63,7 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # 1. Read — should produce source_read
+        # 1. Read - should produce source_read
         _simulate_hook(
             handle_post_tool_use,
             {
@@ -75,7 +75,7 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # 2. WebSearch — should produce search
+        # 2. WebSearch - should produce search
         _simulate_hook(
             handle_post_tool_use,
             {
@@ -87,7 +87,7 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # 3. Grep — should produce search + sources
+        # 3. Grep - should produce search + sources
         _simulate_hook(
             handle_post_tool_use,
             {
@@ -99,7 +99,7 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # 4. Edit — should produce source + file_modified
+        # 4. Edit - should produce source + file_modified
         _simulate_hook(
             handle_post_tool_use,
             {
@@ -114,7 +114,7 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # 5. Write — should produce source + file_modified
+        # 5. Write - should produce source + file_modified
         _simulate_hook(
             handle_post_tool_use,
             {
@@ -129,7 +129,7 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # 6. Bash — should produce tool_used
+        # 6. Bash - should produce tool_used
         _simulate_hook(
             handle_post_tool_use,
             {
@@ -141,19 +141,19 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # 7. WebFetch — should produce source
+        # 7. WebFetch - should produce source
         _simulate_hook(
             handle_post_tool_use,
             {
                 "session_id": session_id,
                 "tool_name": "WebFetch",
                 "tool_input": {"url": "https://docs.python.org/3/library/hashlib.html"},
-                "tool_response": "hashlib — Secure hashes and message digests...",
+                "tool_response": "hashlib - Secure hashes and message digests...",
             },
             openflux_dir,
         )
 
-        # 8. PostToolUseFailure — error event
+        # 8. PostToolUseFailure - error event
         _simulate_hook(
             handle_post_tool_use_failure,
             {
@@ -165,7 +165,7 @@ class TestClaudeCodeHookWorkflow:
             openflux_dir,
         )
 
-        # Session end — builds trace and writes to sink
+        # Session end - builds trace and writes to sink
         with patch.dict(os.environ, {"OPENFLUX_DB_PATH": str(db_path)}):
             _simulate_hook(
                 handle_session_end,
@@ -452,7 +452,7 @@ class TestClaudeCodeTranscriptParsing:
 
 
 class TestRealTranscript:
-    """Parse a real Claude Code transcript from this machine — no fakes."""
+    """Parse a real Claude Code transcript from this machine - no fakes."""
 
     @staticmethod
     def _find_real_transcript() -> Path | None:
@@ -494,7 +494,7 @@ class TestRealTranscript:
 
         td = _parse_transcript(path)
 
-        # A real transcript must have these — they come from the JSONL structure
+        # A real transcript must have these - they come from the JSONL structure
         assert td.task, f"task should be non-empty from {path.name}"
         assert td.decision, f"decision should be non-empty from {path.name}"
         assert td.model, f"model should be non-empty from {path.name}"
@@ -503,5 +503,5 @@ class TestRealTranscript:
         assert td.token_usage.input_tokens > 0
         assert td.token_usage.output_tokens > 0
         assert td.duration_ms >= 0
-        # Context is structurally empty — system prompts aren't in transcripts
+        # Context is structurally empty - system prompts aren't in transcripts
         assert td.context == []

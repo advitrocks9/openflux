@@ -148,7 +148,7 @@ class OpenFluxProcessor(TracingProcessor):
                     started_at=utc_now(),
                 )
         except Exception:
-            logger.warning("OpenFlux: error in on_trace_start callback", exc_info=True)
+            logger.warning("on_trace_start callback", exc_info=True)
 
     def on_trace_end(self, trace: Any) -> None:
         try:
@@ -167,7 +167,7 @@ class OpenFluxProcessor(TracingProcessor):
             else:
                 self._write_default_sink(trace)
         except Exception:
-            logger.warning("OpenFlux: error in on_trace_end callback", exc_info=True)
+            logger.warning("on_trace_end callback", exc_info=True)
 
     def on_span_start(self, span: Any) -> None:
         pass
@@ -202,7 +202,7 @@ class OpenFluxProcessor(TracingProcessor):
                 case _:
                     pass
         except Exception:
-            logger.warning("OpenFlux: error in on_span_end callback", exc_info=True)
+            logger.warning("on_span_end callback", exc_info=True)
 
     def shutdown(self) -> None:
         self.force_flush()
@@ -235,7 +235,7 @@ class OpenFluxProcessor(TracingProcessor):
         name: str = str(getattr(span_data, "name", ""))
         if name:
             acc.agent_name = name
-        # AgentSpanData has no instructions field — system prompts can't be captured
+        # AgentSpanData has no instructions field - system prompts can't be captured
         output_type: str | None = getattr(span_data, "output_type", None)
         if output_type:
             acc.metadata["output_type"] = str(output_type)
