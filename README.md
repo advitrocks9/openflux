@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" width="120" alt="OpenFlux">
+  <img src="assets/logo.png" width="120" alt="OpenFlux">
 </p>
 
 <h1 align="center">OpenFlux</h1>

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.1 (2026-03-28)
+
+### Bug fixes
+- Fix LangChain adapter crash on any tool use (missing slots on `_RunAccumulator`)
+- Fix LangChain `on_chat_model_start` and `on_llm_end` UnboundLocalError when exception occurs
+- Fix Claude Agent SDK `record_usage()` silently failing (trace index never populated)
+- Fix Google ADK always reporting `turn_count=0`
+- Fix AutoGen always reporting `duration_ms=0`
+- Fix OpenAI Agents SDK always reporting `duration_ms=0`
+
+### Improvements
+- Add pre-commit config (ruff check + format)
+- Fix CI to run unit tests only (acceptance tests need API keys)
+- Remove ~15 dead functions across LangChain, Google ADK, CrewAI adapters
+- Fix all SQL queries in cost analysis docs
+- Fix stale adapter coverage claims in docs
+- Add logo
+
 ## 0.1.0 (2026-03-27)
 
 Initial release.
