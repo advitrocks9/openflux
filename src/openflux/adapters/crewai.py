@@ -50,10 +50,24 @@ if _HAS_CREWAI:
         ToolUsageFinishedEvent,
         ToolUsageStartedEvent,
     )
+
+    # Optional events that may not exist in all crewai versions
+    try:
+        from crewai.events import (
+            KnowledgeRetrievalCompletedEvent,  # type: ignore[attr-defined]
+        )
+    except ImportError:
+        KnowledgeRetrievalCompletedEvent = None  # type: ignore[assignment,misc]
+    try:
+        from crewai.events import (
+            MemoryRetrievalCompletedEvent,  # type: ignore[attr-defined]
+        )
+    except ImportError:
+        MemoryRetrievalCompletedEvent = None  # type: ignore[assignment,misc]
 else:
     BaseEventListener = object  # type: ignore[assignment,misc]
-    KnowledgeRetrievalCompletedEvent = None  # type: ignore[assignment]
-    MemoryRetrievalCompletedEvent = None  # type: ignore[assignment]
+    KnowledgeRetrievalCompletedEvent = None  # type: ignore[assignment,misc]
+    MemoryRetrievalCompletedEvent = None  # type: ignore[assignment,misc]
 
 
 @dataclass(slots=True)

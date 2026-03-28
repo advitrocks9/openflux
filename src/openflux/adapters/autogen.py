@@ -343,7 +343,7 @@ class AutoGenStreamConsumer:
             timestamp=acc.started_at or utc_now(),
             agent=self._agent,
             session_id=acc.session_id,
-            model=acc.model,
+            model=acc.model or self._model,
             task=acc.task,
             decision=acc.decision,
             status=Status.ERROR if acc.has_error else Status.COMPLETED,
