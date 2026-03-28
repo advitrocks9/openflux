@@ -155,9 +155,7 @@ class ClaudeAgentSDKAdapter:
         try:
             self._record_tool(input_data, error=True)
         except Exception:
-            logger.warning(
-                "post_tool_use_failure hook", exc_info=True
-            )
+            logger.warning("post_tool_use_failure hook", exc_info=True)
         return {}
 
     async def _on_subagent_start(

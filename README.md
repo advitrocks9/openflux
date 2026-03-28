@@ -127,7 +127,7 @@ Tested end-to-end with real API calls (Gemini, Claude) and simulated event strea
 | AutoGen v0.4 | Working | Untested (API quota) | `openflux[autogen]` |
 | CrewAI | Working | Untested (API quota) | `openflux[crewai]` |
 
-Coverage means "of the fields that are structurally possible for this adapter, how many are populated." 100% means every testable field works. See `.claude/findings.md` for details on what's N/A and why.
+Coverage means "of the fields that are structurally possible for this adapter, how many are populated." 100% means every testable field works.
 
 ## Configuration
 
@@ -150,7 +150,7 @@ A Trace captures one complete unit of agent work:
 - **Metrics**: token usage, duration, turn count, files modified
 - **Extensibility**: tags, scope, metadata dict
 
-Full schema definition in [docs/PRD.md](docs/PRD.md).
+Full schema definition in [docs/schema.md](docs/schema.md).
 
 ## Development
 

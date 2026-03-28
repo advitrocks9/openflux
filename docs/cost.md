@@ -1,6 +1,6 @@
 # Cost Analysis
 
-OpenFlux stores token usage per trace, which makes it straightforward to track and analyze spend across agents, models, and time periods.
+OpenFlux stores token usage per trace. You can track spend across agents, models, and time periods with the CLI or raw SQL.
 
 ## How Token Usage is Captured
 

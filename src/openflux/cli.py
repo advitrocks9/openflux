@@ -689,9 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_install.set_defaults(func=cmd_install)
 
     p_serve = subs.add_parser("serve", help="Start local trace explorer UI")
-    p_serve.add_argument(
-        "--port", type=int, default=5173, help="Port (default: 5173)"
-    )
+    p_serve.add_argument("--port", type=int, default=5173, help="Port (default: 5173)")
     p_serve.add_argument("--db", help="Path to SQLite database")
     p_serve.set_defaults(func=cmd_serve)
 

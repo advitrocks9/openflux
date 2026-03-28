@@ -130,18 +130,14 @@ class OpenFluxCrewListener(BaseEventListener):
                 self._crew_started_at = utc_now()
                 self._session_id = generate_session_id()
             except Exception:
-                logger.warning(
-                    "crew_started callback", exc_info=True
-                )
+                logger.warning("crew_started callback", exc_info=True)
 
         @crewai_event_bus.on(CrewKickoffCompletedEvent)
         def _on_crew_completed(source: Any, event: Any) -> None:
             try:
                 self._flush_remaining()
             except Exception:
-                logger.warning(
-                    "crew_completed callback", exc_info=True
-                )
+                logger.warning("crew_completed callback", exc_info=True)
 
         @crewai_event_bus.on(AgentExecutionStartedEvent)
         def _on_agent_started(source: Any, event: Any) -> None:
@@ -156,9 +152,7 @@ class OpenFluxCrewListener(BaseEventListener):
                         if acc and not acc.agent_role:
                             acc.agent_role = role
             except Exception:
-                logger.warning(
-                    "agent_started callback", exc_info=True
-                )
+                logger.warning("agent_started callback", exc_info=True)
 
         @crewai_event_bus.on(AgentExecutionCompletedEvent)
         def _on_agent_completed(source: Any, event: Any) -> None:
@@ -170,9 +164,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 if acc and output and not acc.decision:
                     acc.decision = output
             except Exception:
-                logger.warning(
-                    "agent_completed callback", exc_info=True
-                )
+                logger.warning("agent_completed callback", exc_info=True)
 
         @crewai_event_bus.on(TaskStartedEvent)
         def _on_task_started(source: Any, event: Any) -> None:
@@ -190,9 +182,7 @@ class OpenFluxCrewListener(BaseEventListener):
                             task_description=description,
                         )
             except Exception:
-                logger.warning(
-                    "task_started callback", exc_info=True
-                )
+                logger.warning("task_started callback", exc_info=True)
 
         @crewai_event_bus.on(TaskCompletedEvent)
         def _on_task_completed(source: Any, event: Any) -> None:
@@ -207,9 +197,7 @@ class OpenFluxCrewListener(BaseEventListener):
                         acc.decision = output
                     self._flush_task(acc)
             except Exception:
-                logger.warning(
-                    "task_completed callback", exc_info=True
-                )
+                logger.warning("task_completed callback", exc_info=True)
 
         @crewai_event_bus.on(LLMCallStartedEvent)
         def _on_llm_started(source: Any, event: Any) -> None:
@@ -264,9 +252,7 @@ class OpenFluxCrewListener(BaseEventListener):
                         )
                     )
             except Exception:
-                logger.warning(
-                    "llm_completed callback", exc_info=True
-                )
+                logger.warning("llm_completed callback", exc_info=True)
 
         @crewai_event_bus.on(ToolUsageStartedEvent)
         def _on_tool_started(source: Any, event: Any) -> None:
@@ -287,9 +273,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 acc._pending_tool_timestamp = utc_now()
                 acc._pending_tool_start_ns = time.monotonic_ns()
             except Exception:
-                logger.warning(
-                    "tool_started callback", exc_info=True
-                )
+                logger.warning("tool_started callback", exc_info=True)
 
         @crewai_event_bus.on(ToolUsageFinishedEvent)
         def _on_tool_finished(source: Any, event: Any) -> None:
@@ -317,9 +301,7 @@ class OpenFluxCrewListener(BaseEventListener):
                 acc._pending_tool_timestamp = ""
                 acc._pending_tool_start_ns = 0
             except Exception:
-                logger.warning(
-                    "tool_finished callback", exc_info=True
-                )
+                logger.warning("tool_finished callback", exc_info=True)
 
         @crewai_event_bus.on(ToolUsageErrorEvent)
         def _on_tool_error(source: Any, event: Any) -> None:

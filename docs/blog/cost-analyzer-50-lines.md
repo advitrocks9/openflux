@@ -109,7 +109,7 @@ adk-search                                   12     31,000      8,400
 Total estimated cost: $5.0393
 ```
 
-Immediately obvious: Claude Code is 99% of the spend. The RAG pipeline is basically free.
+Claude Code is 99% of the spend. The RAG pipeline costs almost nothing.
 
 ## Going further
 

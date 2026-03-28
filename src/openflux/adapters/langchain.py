@@ -247,9 +247,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             if model:
                 root.model = model
         except Exception:
-            logger.warning(
-                "on_chat_model_start callback", exc_info=True
-            )
+            logger.warning("on_chat_model_start callback", exc_info=True)
 
         # Also check invocation_params (used by some providers like Google)
         inv_params: dict[str, Any] = kwargs.get("invocation_params", {})
@@ -485,9 +483,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                 )
             )
         except Exception:
-            logger.warning(
-                "on_retriever_start callback", exc_info=True
-            )
+            logger.warning("on_retriever_start callback", exc_info=True)
 
     def on_retriever_end(
         self,
@@ -542,9 +538,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                     )
                 )
         except Exception:
-            logger.warning(
-                "on_retriever_end callback", exc_info=True
-            )
+            logger.warning("on_retriever_end callback", exc_info=True)
 
     def on_agent_action(
         self,
