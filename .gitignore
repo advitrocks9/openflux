@@ -1,4 +1,6 @@
 __pycache__/
+node_modules/
+tsconfig.tsbuildinfo
 *.pyc
 *.pyo
 *.so
