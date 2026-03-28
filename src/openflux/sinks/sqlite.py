@@ -160,6 +160,14 @@ class SQLiteSink(Sink):
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
 
+    @property
+    def conn(self) -> sqlite3.Connection:
+        return self._conn
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
         cur.execute(

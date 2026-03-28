@@ -9,7 +9,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from openflux._util import (
     content_hash,
@@ -67,7 +67,7 @@ class TranscriptData:
     duration_ms: int = 0
     scope: str | None = None
     correction: str | None = None
-    context: list[ContextRecord] = field(default_factory=list)
+    context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
 
 
 @dataclass(slots=True)
@@ -710,26 +710,28 @@ def _find_transcript(session_id: str, cwd: str) -> Path | None:
 
 def _extract_user_text(message: dict[str, Any]) -> str:
     """Extract text from a user message's content (string or content blocks)."""
-    content = message.get("content", "")
+    content: Any = message.get("content", "")
     if isinstance(content, str):
         return content
     # Content blocks array - concatenate text blocks
+    blocks = cast(list[dict[str, Any]], content if isinstance(content, list) else [])
     parts: list[str] = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
+    for block in blocks:
+        if block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
     return "\n".join(parts)
 
 
 def _extract_assistant_text(message: dict[str, Any]) -> str:
     """Extract the last text block from an assistant message's content."""
-    content = message.get("content", [])
+    content: Any = message.get("content", [])
     if isinstance(content, str):
         return content
     # Walk content blocks in reverse to find last text
-    for block in reversed(content):
-        if isinstance(block, dict) and block.get("type") == "text":
-            return block.get("text", "")
+    blocks = cast(list[dict[str, Any]], content if isinstance(content, list) else [])
+    for block in reversed(blocks):
+        if block.get("type") == "text":
+            return str(block.get("text", ""))
     return ""
 
 

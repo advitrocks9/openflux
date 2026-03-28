@@ -73,7 +73,7 @@ def _handle_traces_list(
     if order not in ("asc", "desc"):
         order = "desc"
 
-    conn = sink._conn
+    conn = sink.conn
     if search:
         return _search_traces(conn, search, agent, status, sort, order, limit, offset)
     return _filter_traces(conn, agent, status, sort, order, limit, offset)
@@ -189,7 +189,7 @@ def _nested_counts(conn: sqlite3.Connection, trace_id: str) -> dict[str, int]:
     file_row = conn.execute(
         "SELECT files_modified FROM traces WHERE id = ?", (trace_id,)
     ).fetchone()
-    files = json.loads(file_row[0]) if file_row and file_row[0] else []
+    files: list[str] = json.loads(file_row[0]) if file_row and file_row[0] else []
     return {
         "tool_count": tool_count[0] if tool_count else 0,
         "search_count": search_count[0] if search_count else 0,
@@ -206,7 +206,7 @@ def _handle_trace_detail(trace_id: str, sink: SQLiteSink) -> tuple[int, dict[str
 
 
 def _handle_stats(sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
-    conn = sink._conn
+    conn = sink.conn
     row = conn.execute(
         "SELECT COUNT(*), "
         "COALESCE(SUM(token_input), 0), "
@@ -250,7 +250,7 @@ def _handle_timeline(
     qs: dict[str, list[str]], sink: SQLiteSink
 ) -> tuple[int, dict[str, Any]]:
     days = min(_qs_int(qs, "days", 30), 365)
-    conn = sink._conn
+    conn = sink.conn
     rows = conn.execute(
         "SELECT DATE(timestamp) as day, COUNT(*), "
         "COALESCE(SUM(token_input), 0), "

@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from openflux.sinks.sqlite import SQLiteSink
 
@@ -323,7 +323,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     sink = SQLiteSink(path=db_path)
     try:
-        conn = sink._conn
+        conn = sink.conn
         _print_status_counts(conn)
         _print_status_tokens(conn)
     finally:
@@ -507,7 +507,7 @@ def cmd_prune(args: argparse.Namespace) -> None:
 
     sink = _get_sink()
     try:
-        db_path = sink._path
+        db_path = sink.path
         before_size = db_path.stat().st_size
 
         count = sink.count_before(cutoff_iso, agent=agent)
@@ -555,12 +555,11 @@ def cmd_install(args: argparse.Namespace) -> None:
     _install_claude_code()
 
 
-def _hook_exists(event_hooks: list[Any], command: str) -> bool:
+def _hook_exists(event_hooks: list[dict[str, Any]], command: str) -> bool:
     for group in event_hooks:
-        if not isinstance(group, dict):
-            continue
-        for h in cast(list[Any], group.get("hooks", [])):
-            if isinstance(h, dict) and h.get("command") == command:
+        hooks: list[dict[str, Any]] = group.get("hooks", [])
+        for h in hooks:
+            if h.get("command") == command:
                 return True
     return False
 
