@@ -334,6 +334,122 @@ class SQLiteSink(Sink):
         self._conn.commit()
         return cur.rowcount > 0
 
+    def forget_by_agent(self, agent: str) -> int:
+        cur = self._conn.execute("DELETE FROM traces WHERE agent = ?", (agent,))
+        self._conn.commit()
+        return cur.rowcount
+
+    def count_by_agent(self, agent: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM traces WHERE agent = ?", (agent,)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def prune(self, before_timestamp: str, agent: str | None = None) -> int:
+        sql = "DELETE FROM traces WHERE timestamp < ?"
+        params: list[str] = [before_timestamp]
+        if agent:
+            sql += " AND agent = ?"
+            params.append(agent)
+        cur = self._conn.execute(sql, params)
+        self._conn.commit()
+        return cur.rowcount
+
+    def count_before(self, before_timestamp: str, agent: str | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM traces WHERE timestamp < ?"
+        params: list[str] = [before_timestamp]
+        if agent:
+            sql += " AND agent = ?"
+            params.append(agent)
+        row = self._conn.execute(sql, params).fetchone()
+        return row[0] if row else 0
+
+    def token_summary(
+        self,
+        days: int | None = None,
+        agent: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate token stats, optionally filtered by days and agent."""
+        where, params = self._build_filter(days, agent)
+        return self._query_token_summary(where, params)
+
+    def token_by_model(
+        self,
+        days: int | None = None,
+        agent: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where, params = self._build_filter(days, agent)
+        rows = self._conn.execute(
+            "SELECT model, SUM(token_input), SUM(token_output) "
+            f"FROM traces WHERE {where} "
+            "GROUP BY model ORDER BY SUM(token_input) + SUM(token_output) DESC",
+            params,
+        ).fetchall()
+        return [
+            {"model": r[0] or "(unknown)", "input": r[1], "output": r[2]} for r in rows
+        ]
+
+    def token_by_agent(
+        self,
+        days: int | None = None,
+        agent: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where, params = self._build_filter(days, agent)
+        rows = self._conn.execute(
+            "SELECT agent, COUNT(*), SUM(token_input), SUM(token_output) "
+            f"FROM traces WHERE {where} "
+            "GROUP BY agent ORDER BY SUM(token_input) + SUM(token_output) DESC",
+            params,
+        ).fetchall()
+        return [
+            {"agent": r[0], "traces": r[1], "input": r[2], "output": r[3]} for r in rows
+        ]
+
+    def token_by_day(
+        self,
+        days: int | None = None,
+        agent: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where, params = self._build_filter(days, agent)
+        rows = self._conn.execute(
+            "SELECT DATE(timestamp), COUNT(*), "
+            "SUM(token_input), SUM(token_output) "
+            f"FROM traces WHERE {where} "
+            "GROUP BY DATE(timestamp) ORDER BY DATE(timestamp) DESC",
+            params,
+        ).fetchall()
+        return [
+            {"date": r[0], "traces": r[1], "input": r[2], "output": r[3]} for r in rows
+        ]
+
+    def _build_filter(
+        self, days: int | None, agent: str | None
+    ) -> tuple[str, list[str]]:
+        clauses: list[str] = ["1=1"]
+        params: list[str] = []
+        if days is not None:
+            clauses.append("timestamp >= datetime('now', ?||' days')")
+            params.append(f"-{days}")
+        if agent:
+            clauses.append("agent = ?")
+            params.append(agent)
+        return " AND ".join(clauses), params
+
+    def _query_token_summary(self, where: str, params: list[str]) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT COUNT(*), "
+            "COALESCE(SUM(token_input), 0), "
+            "COALESCE(SUM(token_output), 0) "
+            f"FROM traces WHERE {where}",
+            params,
+        ).fetchone()
+        return {
+            "traces": row[0],
+            "input": row[1],
+            "output": row[2],
+            "total": row[1] + row[2],
+        }
+
     def export_json(self) -> list[Trace]:
         rows = self._conn.execute("SELECT * FROM traces ORDER BY timestamp").fetchall()
         return [self._row_to_trace(row) for row in rows]
