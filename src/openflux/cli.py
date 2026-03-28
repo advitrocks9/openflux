@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
 
 def _hook_cmd(subcommand: str) -> str:
-    return f"{sys.executable} -m openflux.adapters._claude_code {subcommand}"
+    return f"{sys.executable} -m openflux.adapters.claude_code {subcommand}"
 
 
 CLAUDE_CODE_HOOKS: dict[str, str] = {
@@ -30,6 +31,12 @@ AVAILABLE_ADAPTERS: dict[str, str] = {
     "claude-code": "Claude Code hooks (auto-configures ~/.claude/settings.json)",
     "openai-agents": "OpenAI Agents SDK TracingProcessor (use Python API)",
     "langchain": "LangChain BaseCallbackHandler (use Python API)",
+    "claude-agent-sdk": "Claude Agent SDK hooks (use Python API)",
+    "autogen": "AutoGen v0.4 stream consumer (use Python API)",
+    "crewai": "CrewAI event listener (use Python API)",
+    "google-adk": "Google ADK callbacks (use Python API)",
+    "mcp": "MCP server adapter (use Python API)",
+    "bedrock": "Amazon Bedrock event processor (use Python API)",
 }
 
 
@@ -261,43 +268,39 @@ def cmd_status(args: argparse.Namespace) -> None:
         size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
     print(f"DB size:    {size_str}")
 
-    import sqlite3
-
-    conn = sqlite3.connect(str(db_path))
+    sink = SQLiteSink(path=db_path)
     try:
-        cur = conn.cursor()
-
-        cur.execute("SELECT COUNT(*) FROM traces")
-        total = cur.fetchone()[0]
-        print(f"Total:      {total} trace(s)")
-
-        if total == 0:
-            return
-
-        cur.execute("SELECT MAX(timestamp) FROM traces")
-        latest = cur.fetchone()[0]
-        print(f"Latest:     {latest} ({_relative_time(latest)})")
-
-        cur.execute(
-            "SELECT agent, COUNT(*) FROM traces GROUP BY agent ORDER BY COUNT(*) DESC"
-        )
-        agent_rows = cur.fetchall()
-        if agent_rows:
-            print("\nBy agent:")
-            for agent, count in agent_rows:
-                print(f"  {agent}: {count}")
-
-        cur.execute(
-            "SELECT status, COUNT(*) FROM traces GROUP BY status ORDER BY COUNT(*) DESC"
-        )
-        status_rows = cur.fetchall()
-        if status_rows:
-            print("\nBy status:")
-            for status, count in status_rows:
-                print(f"  {status}: {count}")
-
+        conn = sink._conn
+        _print_status_counts(conn)
     finally:
-        conn.close()
+        sink.close()
+
+
+def _print_status_counts(conn: sqlite3.Connection) -> None:
+    total = conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
+    print(f"Total:      {total} trace(s)")
+
+    if total == 0:
+        return
+
+    latest = conn.execute("SELECT MAX(timestamp) FROM traces").fetchone()[0]
+    print(f"Latest:     {latest} ({_relative_time(latest)})")
+
+    agent_rows = conn.execute(
+        "SELECT agent, COUNT(*) FROM traces GROUP BY agent ORDER BY COUNT(*) DESC"
+    ).fetchall()
+    if agent_rows:
+        print("\nBy agent:")
+        for agent, count in agent_rows:
+            print(f"  {agent}: {count}")
+
+    status_rows = conn.execute(
+        "SELECT status, COUNT(*) FROM traces GROUP BY status ORDER BY COUNT(*) DESC"
+    ).fetchall()
+    if status_rows:
+        print("\nBy status:")
+        for status, count in status_rows:
+            print(f"  {status}: {count}")
 
 
 def cmd_install(args: argparse.Namespace) -> None:
@@ -307,9 +310,15 @@ def cmd_install(args: argparse.Namespace) -> None:
             print(f"  {name:20s} {desc}")
         return
 
+    if not args.adapter:
+        print("Usage: openflux install <adapter>")
+        print("       openflux install --list")
+        print("\nRun 'openflux install --list' to see available adapters.")
+        return
+
     if args.adapter != "claude-code":
         print(f"Adapter '{args.adapter}' is installed via Python API, not CLI.")
-        print("See: https://github.com/advitrocks9/openflux#adapters")
+        print("See: https://github.com/advitrocks9/openflux#adapter-status")
         return
 
     _install_claude_code()
@@ -329,7 +338,15 @@ def _install_claude_code() -> None:
     settings_path = Path.home() / ".claude" / "settings.json"
 
     if settings_path.exists():
-        settings: dict[str, Any] = json.loads(settings_path.read_text())
+        try:
+            settings: dict[str, Any] = json.loads(settings_path.read_text())
+        except json.JSONDecodeError:
+            print(f"Error: {settings_path} contains invalid JSON.", file=sys.stderr)
+            print(
+                "Fix the file manually or delete it and re-run this command.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     else:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings = {}
@@ -396,9 +413,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_trace.set_defaults(func=cmd_trace)
 
     p_export = subs.add_parser("export", help="Export traces as NDJSON")
-    p_export.add_argument(
-        "--format", default="json", help="Output format (default: json)"
-    )
     p_export.add_argument("--agent", help="Filter by agent name")
     p_export.add_argument(
         "--since", help="ISO timestamp, export traces after this time"

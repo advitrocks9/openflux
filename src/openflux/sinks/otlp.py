@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import urllib.request
 from datetime import UTC, datetime
@@ -11,6 +12,8 @@ from typing import Any, override
 
 from openflux.schema import TokenUsage, Trace
 from openflux.sinks.base import Sink
+
+logger = logging.getLogger(__name__)
 
 _SPAN_KIND_INTERNAL = 1
 _TEXT_LIMIT = 500
@@ -80,8 +83,7 @@ class OTLPSink(Sink):
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp.read()
         except Exception:
-            # Telemetry should never crash the host
-            pass
+            logger.warning("OTLP export to %s failed", url, exc_info=True)
 
     @override
     def close(self) -> None:

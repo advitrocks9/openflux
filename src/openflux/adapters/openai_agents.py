@@ -1,13 +1,22 @@
 """OpenAI Agents SDK adapter via TracingProcessor."""
 
+from __future__ import annotations
+
 import importlib.util
 import json
+import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
 
-from openflux._util import content_hash, generate_trace_id, utc_now
+from openflux._util import (
+    content_hash,
+    generate_trace_id,
+    utc_now,
+    write_trace_to_default_sink,
+)
 from openflux.schema import (
     ContextRecord,
     ContextType,
@@ -19,6 +28,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
 
 _HAS_AGENTS = importlib.util.find_spec("agents") is not None
 
@@ -115,7 +126,7 @@ class OpenFluxProcessor(TracingProcessor):
         search_tools: set[str] | None = None,
         file_read_tools: set[str] | None = None,
         file_write_tools: set[str] | None = None,
-        on_trace: Any | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
         parent_id: str | None = None,
     ) -> None:
         self._agent = agent
@@ -428,16 +439,6 @@ class OpenFluxProcessor(TracingProcessor):
             metadata=acc.metadata,
         )
 
-    def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            import os
-            from pathlib import Path
-
-            from openflux.sinks.sqlite import SQLiteSink
-
-            db_env = os.environ.get("OPENFLUX_DB_PATH", "")
-            sink = SQLiteSink(path=Path(db_env)) if db_env else SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+    @staticmethod
+    def _write_default_sink(trace: Trace) -> None:
+        write_trace_to_default_sink(trace)

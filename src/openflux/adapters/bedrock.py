@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +28,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
 
 _HAS_BOTO3 = importlib.util.find_spec("boto3") is not None
 
@@ -263,7 +267,7 @@ class BedrockAdapter:
     def __init__(
         self,
         agent: str = "bedrock",
-        on_trace: Any | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
     ) -> None:
         self._agent = agent
         self._on_trace = on_trace

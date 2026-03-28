@@ -154,7 +154,13 @@ _TRACE_COLS = [
 
 class SQLiteSink(Sink):
     def __init__(self, path: Path | str | None = None) -> None:
-        self._path = Path(path) if path else _DEFAULT_DB_PATH
+        if path is not None:
+            self._path = Path(path)
+        else:
+            import os
+
+            env_path = os.environ.get("OPENFLUX_DB_PATH", "")
+            self._path = Path(env_path) if env_path else _DEFAULT_DB_PATH
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path), timeout=10)
         self._conn.execute("PRAGMA journal_mode=WAL")

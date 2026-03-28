@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from openflux._util import generate_session_id, generate_trace_id, utc_now
+from openflux._util import (
+    generate_session_id,
+    generate_trace_id,
+    utc_now,
+    write_trace_to_default_sink,
+)
 from openflux.schema import (
     ContextRecord,
     SearchRecord,
@@ -20,6 +27,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
 
 _HAS_AUTOGEN = importlib.util.find_spec("autogen_agentchat") is not None
 
@@ -59,7 +68,7 @@ class AutoGenStreamConsumer:
         scope: str | None = None,
         tags: list[str] | None = None,
         context: list[ContextRecord] | None = None,
-        on_trace: Any | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
     ) -> None:
         self._agent = agent
         self._model = model
@@ -364,15 +373,6 @@ class AutoGenStreamConsumer:
 
         return trace
 
-    def _write_default_sink(self, trace: Trace) -> None:
-        import os
-
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            db_env = os.environ.get("OPENFLUX_DB_PATH", "")
-            sink = SQLiteSink(path=db_env) if db_env else SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+    @staticmethod
+    def _write_default_sink(trace: Trace) -> None:
+        write_trace_to_default_sink(trace)

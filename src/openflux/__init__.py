@@ -20,6 +20,7 @@ from openflux.schema import (
 )
 
 if TYPE_CHECKING:
+    from openflux.adapters.langchain import OpenFluxCallbackHandler
     from openflux.sinks.base import Sink
 
 __version__ = "0.1.0"
@@ -38,6 +39,7 @@ __all__ = [
     "TokenUsage",
     "ToolRecord",
     "init",
+    "langchain_handler",
 ]
 
 
@@ -53,7 +55,7 @@ def init(
     return TraceCollector(sinks=sinks, agent=agent, fidelity=fidelity)
 
 
-def langchain_handler(agent: str = "") -> object:
+def langchain_handler(agent: str = "") -> OpenFluxCallbackHandler:
     """Lazy-imports langchain-core."""
     from openflux.adapters.langchain import OpenFluxCallbackHandler
 

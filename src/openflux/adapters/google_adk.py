@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from openflux._util import content_hash, generate_trace_id, utc_now
+from openflux._util import (
+    content_hash,
+    generate_trace_id,
+    utc_now,
+    write_trace_to_default_sink,
+)
 from openflux.schema import (
     ContextRecord,
     ContextType,
@@ -21,6 +28,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
 
 try:
     _HAS_ADK = importlib.util.find_spec("google.adk") is not None
@@ -95,7 +104,7 @@ class GoogleADKAdapter:
         search_tools: set[str] | None = None,
         source_tools: set[str] | None = None,
         write_tools: set[str] | None = None,
-        on_trace: Any | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
     ) -> None:
         self._agent = agent
         self._search_tools = search_tools or _DEFAULT_SEARCH_TOOLS
@@ -125,90 +134,82 @@ class GoogleADKAdapter:
         with self._lock:
             acc = self._get_or_create(sid)
 
-        # Each before_model call = one LLM inference turn
-        acc.llm_turn_count += 1
+            acc.llm_turn_count += 1
 
-        agent_name = getattr(callback_context, "agent_name", "")
-        if agent_name:
-            acc.agent_name = agent_name
+            agent_name = getattr(callback_context, "agent_name", "")
+            if agent_name:
+                acc.agent_name = agent_name
 
-        # Capture model from the request (e.g. "gemini-2.0-flash")
-        model = getattr(llm_request, "model", None)
-        if model:
-            acc.model = str(model)
+            model = getattr(llm_request, "model", None)
+            if model:
+                acc.model = str(model)
 
-        # Extract task from the first user message in conversation contents
-        if not acc.task:
-            contents = getattr(llm_request, "contents", None)
-            if contents:
-                for msg in contents:
-                    if getattr(msg, "role", "") == "user":
-                        acc.task = _extract_text(msg)[:500]
-                        break
+            if not acc.task:
+                contents = getattr(llm_request, "contents", None)
+                if contents:
+                    for msg in contents:
+                        if getattr(msg, "role", "") == "user":
+                            acc.task = _extract_text(msg)[:500]
+                            break
 
-        # ADK stores system instruction in llm_request.config.system_instruction
-        config = getattr(llm_request, "config", None)
-        instructions = getattr(config, "system_instruction", None) if config else None
-        if instructions:
-            text = _extract_text(instructions)
-            if text:
-                h = content_hash(text)
-                # Deduplicate: only record if this exact prompt isn't already captured
-                if not any(c.content_hash == h for c in acc.context):
-                    acc.context.append(
-                        ContextRecord(
-                            type=ContextType.SYSTEM_PROMPT,
-                            source=f"agent:{agent_name}",
-                            content_hash=h,
-                            content=text,
-                            bytes=len(text.encode("utf-8")),
-                            timestamp=utc_now(),
+            config = getattr(llm_request, "config", None)
+            instructions = (
+                getattr(config, "system_instruction", None) if config else None
+            )
+            if instructions:
+                text = _extract_text(instructions)
+                if text:
+                    h = content_hash(text)
+                    if not any(c.content_hash == h for c in acc.context):
+                        acc.context.append(
+                            ContextRecord(
+                                type=ContextType.SYSTEM_PROMPT,
+                                source=f"agent:{agent_name}",
+                                content_hash=h,
+                                content=text,
+                                bytes=len(text.encode("utf-8")),
+                                timestamp=utc_now(),
+                            )
                         )
-                    )
 
     def _after_model(self, callback_context: Any, llm_response: Any) -> None:
         sid = self._session_id_from_context(callback_context)
         with self._lock:
             acc = self._get_or_create(sid)
 
-        # ADK LlmResponse uses model_version, not model
-        model_version = getattr(llm_response, "model_version", "") or ""
-        if model_version:
-            acc.model = model_version
+            model_version = getattr(llm_response, "model_version", "") or ""
+            if model_version:
+                acc.model = model_version
 
-        usage = getattr(llm_response, "usage_metadata", None)
-        if usage:
-            acc.token_usage.input_tokens += getattr(usage, "prompt_token_count", 0) or 0
-            acc.token_usage.output_tokens += (
-                getattr(usage, "candidates_token_count", 0) or 0
-            )
-            # Gemini 2.5 models expose thinking tokens separately
-            thoughts = getattr(usage, "thoughts_token_count", 0) or 0
-            if thoughts:
-                acc.metadata["thoughts_tokens"] = (
-                    acc.metadata.get("thoughts_tokens", 0) + thoughts
+            usage = getattr(llm_response, "usage_metadata", None)
+            if usage:
+                inp = getattr(usage, "prompt_token_count", 0) or 0
+                acc.token_usage.input_tokens += inp
+                acc.token_usage.output_tokens += (
+                    getattr(usage, "candidates_token_count", 0) or 0
                 )
-            # Map cached_content_token_count when the API exposes it
-            cached = getattr(usage, "cached_content_token_count", 0) or 0
-            acc.token_usage.cache_read_tokens += cached
+                thoughts = getattr(usage, "thoughts_token_count", 0) or 0
+                if thoughts:
+                    acc.metadata["thoughts_tokens"] = (
+                        acc.metadata.get("thoughts_tokens", 0) + thoughts
+                    )
+                cached = getattr(usage, "cached_content_token_count", 0) or 0
+                acc.token_usage.cache_read_tokens += cached
 
-        content = getattr(llm_response, "content", None)
-        if content:
-            # Capture last model text as the decision (overwrites each turn,
-            # so final response becomes the decision)
-            text = _extract_text(content)
-            if text:
-                acc.decision = text[:500]
-            _detect_handoffs(content, acc)
+            content = getattr(llm_response, "content", None)
+            if content:
+                text = _extract_text(content)
+                if text:
+                    acc.decision = text[:500]
+                _detect_handoffs(content, acc)
 
     def _before_tool(self, tool: Any, args: dict[str, Any], tool_context: Any) -> None:
         sid = self._session_id_from_context(tool_context)
         with self._lock:
             acc = self._get_or_create(sid)
-
-        call_id = getattr(tool_context, "function_call_id", "") or ""
-        if call_id:
-            acc._tool_starts[call_id] = time.monotonic()
+            call_id = getattr(tool_context, "function_call_id", "") or ""
+            if call_id:
+                acc._tool_starts[call_id] = time.monotonic()
 
     def _after_tool(
         self,
@@ -218,62 +219,60 @@ class GoogleADKAdapter:
         tool_response: Any,
     ) -> None:
         sid = self._session_id_from_context(tool_context)
-        with self._lock:
-            acc = self._get_or_create(sid)
-
         tool_name = getattr(tool, "name", "") or str(tool)
         call_id = getattr(tool_context, "function_call_id", "") or ""
         now = utc_now()
-
-        start_mono = acc._tool_starts.pop(call_id, None)
-        end_mono = time.monotonic()
-        duration_ms = (
-            max(0, int((end_mono - start_mono) * 1000)) if start_mono is not None else 0
-        )
-
         args_str = json.dumps(args, default=str)[:4096] if args else ""
         result_str = _serialize_tool_response(tool_response)
 
-        if tool_name.lower() in self._search_tools:
-            acc.searches.append(
-                SearchRecord(query=args_str[:500], engine=tool_name, timestamp=now)
-            )
-        else:
-            acc.tools.append(
-                ToolRecord(
-                    name=tool_name,
-                    tool_input=args_str,
-                    tool_output=result_str[:16384],
-                    duration_ms=duration_ms,
-                    error=False,
-                    timestamp=now,
-                )
-            )
+        with self._lock:
+            acc = self._get_or_create(sid)
 
-        # Heuristic: detect source reads from tool name or arg keys
-        extracted_path = _extract_path_from_args(args)
-        if tool_name.lower() in self._source_tools or (
-            extracted_path and _looks_like_read(tool_name)
-        ):
-            source_type = (
-                SourceType.URL
-                if extracted_path.startswith(("http://", "https://"))
-                else SourceType.FILE
-            )
-            acc.sources.append(
-                SourceRecord(
-                    type=source_type,
-                    path=extracted_path,
-                    content_hash=content_hash(result_str) if result_str else "",
-                    tool=tool_name,
-                    bytes_read=len(result_str.encode("utf-8")) if result_str else 0,
-                    timestamp=now,
-                )
-            )
+            start_mono = acc._tool_starts.pop(call_id, None)
+            end_mono = time.monotonic()
+            if start_mono is not None:
+                duration_ms = max(0, int((end_mono - start_mono) * 1000))
+            else:
+                duration_ms = 0
 
-        # Heuristic: detect file writes from tool name
-        if tool_name.lower() in self._write_tools and extracted_path:
-            acc.files_modified.append(extracted_path)
+            if tool_name.lower() in self._search_tools:
+                acc.searches.append(
+                    SearchRecord(query=args_str[:500], engine=tool_name, timestamp=now)
+                )
+            else:
+                acc.tools.append(
+                    ToolRecord(
+                        name=tool_name,
+                        tool_input=args_str,
+                        tool_output=result_str[:16384],
+                        duration_ms=duration_ms,
+                        error=False,
+                        timestamp=now,
+                    )
+                )
+
+            extracted_path = _extract_path_from_args(args)
+            if tool_name.lower() in self._source_tools or (
+                extracted_path and _looks_like_read(tool_name)
+            ):
+                source_type = (
+                    SourceType.URL
+                    if extracted_path.startswith(("http://", "https://"))
+                    else SourceType.FILE
+                )
+                acc.sources.append(
+                    SourceRecord(
+                        type=source_type,
+                        path=extracted_path,
+                        content_hash=content_hash(result_str) if result_str else "",
+                        tool=tool_name,
+                        bytes_read=len(result_str.encode("utf-8")) if result_str else 0,
+                        timestamp=now,
+                    )
+                )
+
+            if tool_name.lower() in self._write_tools and extracted_path:
+                acc.files_modified.append(extracted_path)
 
     def flush(self) -> list[Trace]:
         with self._lock:
@@ -326,18 +325,9 @@ class GoogleADKAdapter:
         with self._lock:
             return list(self._completed)
 
-    def _write_default_sink(self, trace: Trace) -> None:
-        import os
-
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            db_env = os.environ.get("OPENFLUX_DB_PATH", "")
-            sink = SQLiteSink(db_env) if db_env else SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+    @staticmethod
+    def _write_default_sink(trace: Trace) -> None:
+        write_trace_to_default_sink(trace)
 
 
 def create_adk_callbacks(
@@ -345,7 +335,7 @@ def create_adk_callbacks(
     search_tools: set[str] | None = None,
     source_tools: set[str] | None = None,
     write_tools: set[str] | None = None,
-    on_trace: Any | None = None,
+    on_trace: Callable[[Trace], None] | None = None,
 ) -> ADKCallbacks:
     adapter = GoogleADKAdapter(
         agent=agent,

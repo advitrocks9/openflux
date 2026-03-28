@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -31,6 +32,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
 
 CORRECTION_PATTERN = re.compile(
     r"(?i)\b(no[,.]?\s+(that'?s\s+)?(not|wrong)|"
@@ -836,29 +839,18 @@ def _timestamp_delta_ms(first: str, last: str) -> int:
         return 0
 
 
-def _detect_corrections(transcript_path: str, trace: Trace) -> None:
-    path = Path(transcript_path)
-    if not path.exists():
-        return
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        matches = CORRECTION_PATTERN.findall(text)
-        if matches:
-            trace.correction = f"Detected {len(matches)} potential correction(s)"
-    except OSError:
-        pass
-
-
 def _write_to_sinks(trace: Trace) -> None:
-    db_path = os.environ.get("OPENFLUX_DB_PATH", "")
     try:
         from openflux.sinks.sqlite import SQLiteSink
 
-        sink = SQLiteSink(path=db_path or None)
-        sink.write(trace)
-        sink.close()
+        sink = SQLiteSink()
+        try:
+            sink.write(trace)
+        finally:
+            sink.close()
     except Exception:
-        # Fallback to stderr so data isn't lost
+        logger.warning("Failed to write trace %s to SQLite", trace.id, exc_info=True)
+        # Subprocess context: emit to stderr so data isn't lost
         sys.stderr.write(json.dumps(trace.to_dict(), default=str) + "\n")
 
 

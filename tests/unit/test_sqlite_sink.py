@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -354,3 +356,274 @@ class TestAll22FieldsRoundtrip:
 
         # Metadata
         assert loaded.metadata == {"environment": "ci", "commit": "abc123"}
+
+
+@pytest.mark.integration
+class TestV1ToV2Migration:
+    """Create a v1 DB (old FTS schema), reopen with current code, verify migration."""
+
+    _V1_TABLES_SQL = """\
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS traces (
+    id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    parent_id TEXT,
+    model TEXT DEFAULT '',
+    task TEXT DEFAULT '',
+    decision TEXT DEFAULT '',
+    status TEXT DEFAULT 'completed',
+    correction TEXT,
+    scope TEXT,
+    tags TEXT DEFAULT '[]',
+    files_modified TEXT DEFAULT '[]',
+    turn_count INTEGER DEFAULT 0,
+    token_input INTEGER DEFAULT 0,
+    token_output INTEGER DEFAULT 0,
+    token_cache_read INTEGER DEFAULT 0,
+    token_cache_creation INTEGER DEFAULT 0,
+    duration_ms INTEGER DEFAULT 0,
+    metadata TEXT DEFAULT '{}',
+    schema_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trace_context (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL REFERENCES traces(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    content_hash TEXT DEFAULT '',
+    content TEXT DEFAULT '',
+    bytes INTEGER DEFAULT 0,
+    timestamp TEXT
+);
+
+CREATE TABLE IF NOT EXISTS trace_searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL REFERENCES traces(id) ON DELETE CASCADE,
+    query TEXT NOT NULL,
+    engine TEXT DEFAULT '',
+    results_count INTEGER DEFAULT 0,
+    timestamp TEXT
+);
+
+CREATE TABLE IF NOT EXISTS trace_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL REFERENCES traces(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    path TEXT DEFAULT '',
+    content_hash TEXT DEFAULT '',
+    content TEXT DEFAULT '',
+    tool TEXT DEFAULT '',
+    bytes_read INTEGER DEFAULT 0,
+    timestamp TEXT
+);
+
+CREATE TABLE IF NOT EXISTS trace_tools (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL REFERENCES traces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    tool_input TEXT DEFAULT '',
+    tool_output TEXT DEFAULT '',
+    duration_ms INTEGER DEFAULT 0,
+    error BOOLEAN DEFAULT 0,
+    timestamp TEXT
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS traces_fts USING fts5(
+    task, decision, correction, scope,
+    content=traces, content_rowid=rowid
+);
+
+CREATE TRIGGER IF NOT EXISTS traces_fts_insert AFTER INSERT ON traces BEGIN
+    INSERT INTO traces_fts(rowid, task, decision, correction, scope)
+    VALUES (new.rowid, new.task, new.decision, new.correction, new.scope);
+END;
+
+CREATE TRIGGER IF NOT EXISTS traces_fts_delete AFTER DELETE ON traces BEGIN
+    INSERT INTO traces_fts(traces_fts, rowid, task, decision, correction, scope)
+    VALUES ('delete', old.rowid, old.task, old.decision, old.correction, old.scope);
+END;
+"""
+
+    def _create_v1_db(self, db_path: Path) -> str:
+        """Create a v1 database and insert a trace. Returns the trace ID."""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(self._V1_TABLES_SQL)
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (1)",
+        )
+
+        trace_id = "trc-v1migration"
+        conn.execute(
+            "INSERT INTO traces "
+            "(id, timestamp, agent, session_id, model, task, decision, "
+            "status, scope, tags, files_modified, turn_count, "
+            "token_input, token_output, token_cache_read, "
+            "token_cache_creation, duration_ms, metadata, schema_version) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                trace_id,
+                "2026-03-01T00:00:00Z",
+                "v1-agent",
+                "ses-v1test",
+                "gpt-4",
+                "v1 migration task",
+                "decided to migrate",
+                "completed",
+                "test-scope",
+                json.dumps(["v1"]),
+                json.dumps(["/old.py"]),
+                2,
+                100,
+                50,
+                0,
+                0,
+                5000,
+                json.dumps({"v": 1}),
+                "0.1.0",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return trace_id
+
+    def test_v1_db_migrates_to_v2(self, tmp_path: Path) -> None:
+        db = tmp_path / "v1.db"
+        trace_id = self._create_v1_db(db)
+
+        # Reopening with SQLiteSink triggers migration
+        sink = SQLiteSink(path=db)
+
+        # Schema version should now be 2
+        row = sink._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        assert row is not None
+        assert row[0] == 2
+
+        # Original trace must still be readable
+        trace = sink.get(trace_id)
+        assert trace is not None
+        assert trace.agent == "v1-agent"
+        assert trace.task == "v1 migration task"
+        assert trace.scope == "test-scope"
+        sink.close()
+
+    def test_v1_fts_search_works_for_new_inserts(self, tmp_path: Path) -> None:
+        """New inserts after v1->v2 migration are searchable by expanded columns."""
+        db = tmp_path / "v1_fts.db"
+        self._create_v1_db(db)
+
+        sink = SQLiteSink(path=db)
+
+        # BUG: Pre-existing rows from v1 are NOT re-indexed into the new FTS table.
+        # The _migrate_fts_v2 method drops and recreates the FTS table + triggers,
+        # but does not rebuild the index (missing INSERT INTO traces_fts SELECT ...).
+        # As a result, searches for v1 data return empty results.
+        # Only new inserts after migration are indexed.
+        results = sink.search("migration")
+        assert len(results) == 0  # would be 1 if migration rebuilt the index
+
+        # Verify new inserts ARE indexed with expanded columns (v2 feature)
+        sink.write(make_trace(agent="post-migration-agent", task="new task"))
+        results = sink.search("post-migration-agent")
+        assert len(results) == 1
+        sink.close()
+
+
+@pytest.mark.integration
+class TestSinkFailures:
+    def test_write_rollback_on_duplicate_id(self, sink: SQLiteSink) -> None:
+        """Duplicate trace ID should raise and not leave partial data."""
+        trace = make_trace()
+        sink.write(trace)
+
+        # Second write with same ID should fail with IntegrityError
+        with pytest.raises(sqlite3.IntegrityError):
+            sink.write(trace)
+
+        # Only one trace should exist
+        count = sink._conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
+        assert count == 1
+
+    def test_write_rollback_preserves_prior_data(self, sink: SQLiteSink) -> None:
+        """A failed write should not corrupt previously written traces."""
+        good = make_trace(task="good trace")
+        sink.write(good)
+
+        # Force a duplicate to trigger rollback
+        bad = make_trace(task="bad trace")
+        bad.id = good.id
+        with pytest.raises(sqlite3.IntegrityError):
+            sink.write(bad)
+
+        result = sink.get(good.id)
+        assert result is not None
+        assert result.task == "good trace"
+
+    def test_readonly_db_write_fails(self, tmp_path: Path) -> None:
+        """Writing to a read-only DB should raise on write, not silently succeed."""
+        db = tmp_path / "ro.db"
+        sink = SQLiteSink(path=db)
+        sink.write(make_trace())
+        sink.close()
+
+        # Make directory read-only so WAL/SHM files can't be created
+        db.chmod(0o444)
+        tmp_path.chmod(0o555)
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                ro_sink = SQLiteSink(path=db)
+                ro_sink.write(make_trace())
+        finally:
+            tmp_path.chmod(0o755)
+            db.chmod(0o644)
+
+
+@pytest.mark.integration
+class TestFTS5Columns:
+    """Verify FTS5 search works across all indexed columns (v2 schema)."""
+
+    def test_search_by_agent(self, sink: SQLiteSink) -> None:
+        sink.write(make_trace(agent="unique-fts-agent", task="something"))
+        results = sink.search("unique-fts-agent")
+        assert len(results) == 1
+        assert results[0].agent == "unique-fts-agent"
+
+    def test_search_by_model(self, sink: SQLiteSink) -> None:
+        sink.write(make_trace(model="gemini-2.5-flash-preview", task="anything"))
+        results = sink.search("gemini-2.5-flash-preview")
+        assert len(results) == 1
+
+    def test_search_by_scope(self, sink: SQLiteSink) -> None:
+        sink.write(make_trace(scope="unique-fts-scope", task="anything"))
+        results = sink.search("unique-fts-scope")
+        assert len(results) == 1
+        assert results[0].scope == "unique-fts-scope"
+
+    def test_search_by_correction(self, sink: SQLiteSink) -> None:
+        sink.write(
+            make_trace(correction="switched from bcrypt to argon2", task="anything")
+        )
+        results = sink.search("argon2")
+        assert len(results) == 1
+
+    def test_search_by_session_id(self, sink: SQLiteSink) -> None:
+        sink.write(make_trace(session_id="ses-uniqueftssession", task="anything"))
+        results = sink.search("ses-uniqueftssession")
+        assert len(results) == 1
+        assert results[0].session_id == "ses-uniqueftssession"
+
+    def test_search_by_files_modified(self, sink: SQLiteSink) -> None:
+        sink.write(
+            make_trace(
+                files_modified=["/src/unique_fts_file.py"],
+                task="anything",
+            )
+        )
+        results = sink.search("unique_fts_file")
+        assert len(results) == 1

@@ -52,7 +52,7 @@ openflux = "openflux.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/advitrocks9/openflux"
-Documentation = "https://github.com/advitrocks9/openflux/docs"
+Documentation = "https://github.com/advitrocks9/openflux/tree/main/docs"
 Repository = "https://github.com/advitrocks9/openflux"
 
 [tool.hatch.build.targets.wheel]

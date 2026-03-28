@@ -196,3 +196,62 @@ class TestOTLPFidelity:
         payload = sink._build_payload(r)
         span = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
         assert len(span["name"]) <= len("trace: ") + 80
+
+
+class TestOTLPFailures:
+    def test_timeout_error_not_raised(self) -> None:
+        """URLError/timeout should be swallowed, not crash the host."""
+        from urllib.error import URLError
+
+        sink = OTLPSink(endpoint="http://unreachable:4318")
+        with patch("urllib.request.urlopen", side_effect=URLError("timed out")):
+            # Should not raise
+            sink.write(make_trace())
+
+    def test_http_500_not_raised(self) -> None:
+        """Server errors should be swallowed, not crash the host."""
+        from urllib.error import HTTPError
+
+        sink = OTLPSink(endpoint="http://localhost:4318")
+        error = HTTPError(
+            "http://localhost:4318/v1/traces",
+            500,
+            "Internal Server Error",
+            {},
+            None,  # type: ignore[arg-type]
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            sink.write(make_trace())
+
+    def test_connection_refused_not_raised(self) -> None:
+        """ConnectionError should be swallowed."""
+        sink = OTLPSink(endpoint="http://localhost:4318")
+        with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError):
+            sink.write(make_trace())
+
+    def test_endpoint_from_env(self) -> None:
+        """OPENFLUX_OTLP_ENDPOINT env var should configure the endpoint."""
+        import os
+
+        old = os.environ.get("OPENFLUX_OTLP_ENDPOINT")
+        try:
+            os.environ["OPENFLUX_OTLP_ENDPOINT"] = "http://custom:9999"
+            sink = OTLPSink()
+            assert sink._endpoint == "http://custom:9999"
+        finally:
+            if old is None:
+                os.environ.pop("OPENFLUX_OTLP_ENDPOINT", None)
+            else:
+                os.environ["OPENFLUX_OTLP_ENDPOINT"] = old
+
+    def test_default_endpoint(self) -> None:
+        """Without env var or explicit endpoint, defaults to localhost:4318."""
+        import os
+
+        old = os.environ.pop("OPENFLUX_OTLP_ENDPOINT", None)
+        try:
+            sink = OTLPSink()
+            assert sink._endpoint == "http://localhost:4318"
+        finally:
+            if old is not None:
+                os.environ["OPENFLUX_OTLP_ENDPOINT"] = old

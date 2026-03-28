@@ -80,6 +80,8 @@ collector.record_event("session-1", {"type": "tool", "tool_name": "Bash", "tool_
 collector.record_event("session-1", {"type": "search", "query": "oauth best practices", "engine": "web"})
 
 trace = collector.flush("session-1")  # persisted to ~/.openflux/traces.db
+print(f"Traced: {trace.task} -> {trace.status} ({len(trace.tools_used)} tools)")
+# Then query later: openflux recent
 ```
 
 ## CLI
@@ -93,6 +95,18 @@ openflux export > traces.json            # dump as NDJSON
 openflux status                          # db path, counts, breakdown
 openflux install claude-code             # auto-configure hooks
 openflux install --list                  # show available adapters
+```
+
+## What you see
+
+```
+$ openflux recent
+ID              WHEN     AGENT        TASK                                      STATUS
+trc-a1b2c3d4e5  2m ago   claude-code  Fix authentication bug in auth.py         completed
+trc-f6e7d8c9b0  15m ago  my-rag-app   Analyze Q3 revenue data                  completed
+trc-1a2b3c4d5e  1h ago   claude-code  Refactor database connection pooling      completed
+
+3 trace(s) shown.
 ```
 
 ## Adapter Status

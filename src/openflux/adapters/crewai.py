@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any
@@ -15,6 +17,7 @@ from openflux._util import (
     generate_session_id,
     generate_trace_id,
     utc_now,
+    write_trace_to_default_sink,
 )
 from openflux.schema import (
     ContextRecord,
@@ -27,6 +30,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
 
 _HAS_CREWAI = importlib.util.find_spec("crewai") is not None
 
@@ -92,7 +97,7 @@ class OpenFluxCrewListener(BaseEventListener):
     def __init__(
         self,
         agent: str = "crewai-crew",
-        on_trace: Any | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
     ) -> None:
         self._agent = agent
         self._on_trace = on_trace
@@ -541,18 +546,9 @@ class OpenFluxCrewListener(BaseEventListener):
             metadata=metadata,
         )
 
-    def _write_default_sink(self, trace: Trace) -> None:
-        try:
-            import os
-
-            from openflux.sinks.sqlite import SQLiteSink
-
-            db_env = os.environ.get("OPENFLUX_DB_PATH", "")
-            sink = SQLiteSink(path=db_env if db_env else None)
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+    @staticmethod
+    def _write_default_sink(trace: Trace) -> None:
+        write_trace_to_default_sink(trace)
 
     @property
     def completed_traces(self) -> list[Trace]:

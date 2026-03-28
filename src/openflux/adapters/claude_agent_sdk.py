@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +15,7 @@ from openflux._util import (
     content_hash,
     generate_trace_id,
     utc_now,
+    write_trace_to_default_sink,
 )
 from openflux.schema import (
     ContextRecord,
@@ -25,6 +28,8 @@ from openflux.schema import (
     ToolRecord,
     Trace,
 )
+
+logger = logging.getLogger(__name__)
 
 _HAS_SDK = importlib.util.find_spec("claude_agent_sdk") is not None
 
@@ -75,7 +80,7 @@ class ClaudeAgentSDKAdapter:
     def __init__(
         self,
         agent: str = "claude-agent-sdk",
-        on_trace: Any | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
         *,
         scope: str | None = None,
         tags: list[str] | None = None,
@@ -410,18 +415,9 @@ class ClaudeAgentSDKAdapter:
             metadata=metadata,
         )
 
-    def _write_default_sink(self, trace: Trace) -> None:
-        import os
-
-        try:
-            from openflux.sinks.sqlite import SQLiteSink
-
-            db_path_str = os.environ.get("OPENFLUX_DB_PATH")
-            sink = SQLiteSink(path=db_path_str) if db_path_str else SQLiteSink()
-            sink.write(trace)
-            sink.close()
-        except Exception:
-            pass
+    @staticmethod
+    def _write_default_sink(trace: Trace) -> None:
+        write_trace_to_default_sink(trace)
 
     def finalize(self) -> None:
         """Flush any traces that weren't patched by record_usage()."""
@@ -460,7 +456,7 @@ class ClaudeAgentSDKAdapter:
 
 def create_openflux_hooks(
     agent: str = "claude-agent-sdk",
-    on_trace: Any | None = None,
+    on_trace: Callable[[Trace], None] | None = None,
     *,
     scope: str | None = None,
     tags: list[str] | None = None,

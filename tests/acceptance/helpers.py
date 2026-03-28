@@ -75,7 +75,7 @@ def check_trace(
 
     report = f"\nCoverage: {populated}/{len(testable)} ({coverage:.0f}%)\n"
     for f in ALL_FIELDS:
-        status = "✓" if results[f] else ("—" if f in na else "✗")
+        status = "Y" if results[f] else ("-" if f in na else "X")
         report += f"  {status} {f}\n"
 
     if failures:
