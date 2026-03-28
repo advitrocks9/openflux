@@ -254,10 +254,6 @@ class OpenFluxCrewListener(BaseEventListener):
                     "OpenFlux: error in llm_completed callback", exc_info=True
                 )
 
-            # Synthetic ToolRecords from native LLM tool calls
-            if is_tool_call and response:
-                self._extract_native_tool_calls(acc, response)
-
         @crewai_event_bus.on(ToolUsageStartedEvent)
         def _on_tool_started(source: Any, event: Any) -> None:
             try:

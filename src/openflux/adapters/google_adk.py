@@ -6,7 +6,6 @@ import importlib.util
 import json
 import logging
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,7 +21,6 @@ from openflux.schema import (
     ContextType,
     SearchRecord,
     SourceRecord,
-    SourceType,
     Status,
     TokenUsage,
     ToolRecord,
