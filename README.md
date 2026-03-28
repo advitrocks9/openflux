@@ -1,11 +1,17 @@
-# OpenFlux
+<p align="center">
+  <img src="assets/logo.svg" width="120" alt="OpenFlux">
+</p>
 
-[![PyPI](https://img.shields.io/pypi/v/openflux)](https://pypi.org/project/openflux/)
-[![PyPI Downloads](https://img.shields.io/pypi/dm/openflux)](https://pypi.org/project/openflux/)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+<h1 align="center">OpenFlux</h1>
 
-Open standard for AI agent telemetry. One schema across every framework.
+<p align="center">
+  <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/v/openflux" alt="PyPI"></a>
+  <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/dm/openflux" alt="Downloads"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT"></a>
+</p>
+
+<p align="center">Open standard for AI agent telemetry. One schema across every framework.</p>
 
 ## Why
 

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Dark variant - same geometry, lighter stroke for dark backgrounds -->
+  <path d="M80 120 L200 240 L256 256" stroke="#818CF8" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
+  <path d="M256 80 L256 240 L256 256" stroke="#818CF8" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+  <path d="M432 120 L312 240 L256 256" stroke="#818CF8" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
+  <circle cx="256" cy="256" r="20" fill="#818CF8"/>
+  <path d="M256 276 L256 432" stroke="#818CF8" stroke-width="28" stroke-linecap="round"/>
+  <circle cx="110" cy="146" r="8" fill="#818CF8" opacity="0.5"/>
+  <circle cx="256" cy="120" r="8" fill="#818CF8" opacity="0.7"/>
+  <circle cx="402" cy="146" r="8" fill="#818CF8" opacity="0.5"/>
+  <line x1="240" y1="340" x2="272" y2="340" stroke="#818CF8" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+  <line x1="240" y1="370" x2="272" y2="370" stroke="#818CF8" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+  <line x1="240" y1="400" x2="272" y2="400" stroke="#818CF8" stroke-width="4" stroke-linecap="round" opacity="0.5"/>
+</svg>
