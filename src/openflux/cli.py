@@ -3,15 +3,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 from openflux.sinks.sqlite import SQLiteSink
 
 DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
+
+# Per-million-token pricing: (input_rate, output_rate)
+_MODEL_RATES: list[tuple[str, float, float]] = [
+    ("gpt-4o-mini", 0.15, 0.60),
+    ("gpt-4o", 2.50, 10.00),
+    ("claude-", 3.00, 15.00),
+    ("gemini", 0.075, 0.30),
+]
+_DEFAULT_RATE = (1.00, 3.00)
 
 
 def _hook_cmd(subcommand: str) -> str:
@@ -85,7 +95,7 @@ def _truncate(text: str, max_len: int = 50) -> str:
     text = text.replace("\n", " ").strip()
     if len(text) <= max_len:
         return text
-    return text[: max_len - 1] + "…"
+    return text[: max_len - 1] + "\u2026"
 
 
 def _print_table(headers: list[str], rows: list[list[str]]) -> None:
@@ -101,7 +111,7 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
 
     header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
     print(header_line)
-    print("  ".join("─" * w for w in widths))
+    print("  ".join("\u2500" * w for w in widths))
 
     for row in rows:
         line = "  ".join(
@@ -111,9 +121,47 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
         print(line)
 
 
+def _format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate USD cost from model name and token counts."""
+    model_lower = model.lower()
+    for prefix, in_rate, out_rate in _MODEL_RATES:
+        if prefix in model_lower:
+            return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
+    in_rate, out_rate = _DEFAULT_RATE
+    return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
+
+
+def _bar(value: int, max_value: int, width: int = 12) -> str:
+    """Render a proportional bar using block characters."""
+    if max_value <= 0:
+        return ""
+    filled = max(1, round(value / max_value * width))
+    return "\u2588" * filled
+
+
 def _get_sink() -> SQLiteSink:
     db_path = _require_db()
     return SQLiteSink(path=db_path)
+
+
+def _parse_duration(spec: str) -> int:
+    """Parse '30d' into number of days. Only supports 'd' suffix."""
+    match = re.fullmatch(r"(\d+)d", spec)
+    if not match:
+        print(f"Invalid duration: '{spec}'. Use format: 30d", file=sys.stderr)
+        sys.exit(1)
+    return int(match.group(1))
+
+
+# ── recent ──────────────────────────────────────────────────────────────
 
 
 def cmd_recent(args: argparse.Namespace) -> None:
@@ -143,6 +191,9 @@ def cmd_recent(args: argparse.Namespace) -> None:
     print(f"\n{len(traces)} trace(s) shown.")
 
 
+# ── search ──────────────────────────────────────────────────────────────
+
+
 def cmd_search(args: argparse.Namespace) -> None:
     sink = _get_sink()
     try:
@@ -164,6 +215,9 @@ def cmd_search(args: argparse.Namespace) -> None:
 
     _print_table(["ID", "WHEN", "AGENT", "TASK", "STATUS"], rows)
     print(f"\n{len(traces)} result(s) for '{args.query}'.")
+
+
+# ── trace ───────────────────────────────────────────────────────────────
 
 
 def _format_record_list(label: str, records: list[Any]) -> None:
@@ -235,6 +289,9 @@ def cmd_trace(args: argparse.Namespace) -> None:
         print(f"    {json.dumps(trace.metadata, indent=4, default=str)}")
 
 
+# ── export ──────────────────────────────────────────────────────────────
+
+
 def cmd_export(args: argparse.Namespace) -> None:
     sink = _get_sink()
     try:
@@ -250,6 +307,9 @@ def cmd_export(args: argparse.Namespace) -> None:
         print(json.dumps(trace.to_dict(), default=str))
 
 
+# ── status ──────────────────────────────────────────────────────────────
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     db_path = _get_db_path()
 
@@ -259,19 +319,13 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("Status:     No database (run an adapter to start collecting)")
         return
 
-    size_bytes = db_path.stat().st_size
-    if size_bytes < 1024:
-        size_str = f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        size_str = f"{size_bytes / 1024:.1f} KB"
-    else:
-        size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
-    print(f"DB size:    {size_str}")
+    print(f"DB size:    {_format_size(db_path.stat().st_size)}")
 
     sink = SQLiteSink(path=db_path)
     try:
         conn = sink._conn
         _print_status_counts(conn)
+        _print_status_tokens(conn)
     finally:
         sink.close()
 
@@ -301,6 +355,183 @@ def _print_status_counts(conn: sqlite3.Connection) -> None:
         print("\nBy status:")
         for status, count in status_rows:
             print(f"  {status}: {count}")
+
+
+def _print_status_tokens(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(token_input), 0), COALESCE(SUM(token_output), 0) "
+        "FROM traces"
+    ).fetchone()
+    total_in, total_out = row[0], row[1]
+    if total_in == 0 and total_out == 0:
+        return
+
+    # Estimate cost across all models
+    model_rows = conn.execute(
+        "SELECT model, SUM(token_input), SUM(token_output) FROM traces GROUP BY model"
+    ).fetchall()
+    total_cost = sum(
+        _estimate_cost(m or "", ti or 0, to or 0) for m, ti, to in model_rows
+    )
+
+    print("\nToken usage (all time):")
+    print(f"  Input:      {total_in:>12,} tokens")
+    print(f"  Output:     {total_out:>12,} tokens")
+    print(f"  Est. cost:  ${total_cost:,.2f}")
+
+
+# ── cost ────────────────────────────────────────────────────────────────
+
+
+def cmd_cost(args: argparse.Namespace) -> None:
+    sink = _get_sink()
+    try:
+        days: int = args.days
+        agent: str | None = args.agent or None
+
+        summary = sink.token_summary(days=days, agent=agent)
+        by_model = sink.token_by_model(days=days, agent=agent)
+        by_agent = sink.token_by_agent(days=days, agent=agent)
+        by_day = sink.token_by_day(days=days, agent=agent)
+    finally:
+        sink.close()
+
+    _print_cost_header(days, summary)
+    _print_cost_by_model(by_model)
+    _print_cost_by_agent(by_agent)
+    _print_cost_by_day(by_day)
+
+
+def _print_cost_header(days: int, summary: dict[str, Any]) -> None:
+    print(f"Token Usage (last {days} days)")
+    print("\u2500" * 45)
+    print(f"  Traces:     {summary['traces']:,}")
+    print(f"  Input:      {summary['input']:>12,} tokens")
+    print(f"  Output:     {summary['output']:>12,} tokens")
+    print(f"  Total:      {summary['total']:>12,} tokens")
+
+    # Cost needs per-model breakdown to apply correct rates
+    # but we can estimate from total with a simple heuristic
+    # (the by-model section will show accurate per-model costs)
+
+
+def _print_cost_by_model(by_model: list[dict[str, Any]]) -> None:
+    if not by_model:
+        return
+    print("\nBy model:")
+    for row in by_model:
+        total = row["input"] + row["output"]
+        cost = _estimate_cost(row["model"], row["input"], row["output"])
+        print(f"  {row['model']:30s} {total:>12,} tokens  ${cost:,.2f}")
+
+
+def _print_cost_by_agent(by_agent: list[dict[str, Any]]) -> None:
+    if not by_agent:
+        return
+    print("\nBy agent:")
+    for row in by_agent:
+        total = row["input"] + row["output"]
+        print(f"  {row['agent']:30s} {row['traces']:>4} traces {total:>12,} tokens")
+
+
+def _print_cost_by_day(by_day: list[dict[str, Any]]) -> None:
+    if not by_day:
+        return
+    max_total = max((r["input"] + r["output"]) for r in by_day)
+
+    print("\nDaily breakdown:")
+    for row in by_day:
+        total = row["input"] + row["output"]
+        bar = _bar(total, max_total)
+        # Format date as "Mar 27" style
+        try:
+            dt = datetime.strptime(row["date"], "%Y-%m-%d")
+            label = dt.strftime("%b %d")
+        except (ValueError, TypeError):
+            label = str(row["date"])
+        print(f"  {label}  {bar:12s}  {row['traces']:>3} traces {total:>12,} tokens")
+
+
+# ── forget ──────────────────────────────────────────────────────────────
+
+
+def cmd_forget(args: argparse.Namespace) -> None:
+    if args.agent:
+        _forget_by_agent(args.agent)
+    elif args.trace_id:
+        _forget_single(args.trace_id)
+    else:
+        print("Provide a trace ID or --agent flag.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _forget_single(trace_id: str) -> None:
+    sink = _get_sink()
+    try:
+        deleted = sink.forget(trace_id)
+    finally:
+        sink.close()
+    if deleted:
+        print(f"Deleted trace {trace_id}")
+    else:
+        print(f"Trace not found: {trace_id}")
+
+
+def _forget_by_agent(agent: str) -> None:
+    sink = _get_sink()
+    try:
+        count = sink.count_by_agent(agent)
+        if count == 0:
+            print(f"No traces found for agent '{agent}'")
+            return
+
+        response = input(f"Delete {count} traces for agent '{agent}'? [y/N] ")
+        if response.strip().lower() != "y":
+            print("Cancelled.")
+            return
+
+        deleted = sink.forget_by_agent(agent)
+        print(f"Deleted {deleted} traces for agent '{agent}'")
+    finally:
+        sink.close()
+
+
+# ── prune ───────────────────────────────────────────────────────────────
+
+
+def cmd_prune(args: argparse.Namespace) -> None:
+    days = _parse_duration(args.older_than)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    cutoff_iso = cutoff.isoformat()
+    agent: str | None = args.agent or None
+
+    sink = _get_sink()
+    try:
+        db_path = sink._path
+        before_size = db_path.stat().st_size
+
+        count = sink.count_before(cutoff_iso, agent=agent)
+        if count == 0:
+            print("No matching traces to prune.")
+            return
+
+        cutoff_display = cutoff.strftime("%Y-%m-%d")
+        response = input(f"Delete {count} traces older than {cutoff_display}? [y/N] ")
+        if response.strip().lower() != "y":
+            print("Cancelled.")
+            return
+
+        deleted = sink.prune(cutoff_iso, agent=agent)
+        after_size = db_path.stat().st_size
+        print(
+            f"Deleted {deleted} traces. "
+            f"DB size: {_format_size(before_size)} -> {_format_size(after_size)}"
+        )
+    finally:
+        sink.close()
+
+
+# ── install ─────────────────────────────────────────────────────────────
 
 
 def cmd_install(args: argparse.Namespace) -> None:
@@ -375,15 +606,18 @@ def _install_claude_code() -> None:
     if added:
         print(f"Added hooks to {settings_path}:")
         for name in added:
-            print(f"  ✓ {name}")
+            print(f"  \u2713 {name}")
     if skipped:
         print("\nAlready configured:")
         for name in skipped:
-            print(f"  · {name}")
+            print(f"  \u00b7 {name}")
     if not added and not skipped:
         print("No hooks to add.")
 
     print("\nOpenFlux will now capture Claude Code telemetry.")
+
+
+# ── parser ──────────────────────────────────────────────────────────────
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -421,6 +655,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = subs.add_parser("status", help="Show database status")
     p_status.set_defaults(func=cmd_status)
+
+    p_cost = subs.add_parser("cost", help="Show token spend analysis")
+    p_cost.add_argument(
+        "--days", type=int, default=7, help="Lookback window in days (default: 7)"
+    )
+    p_cost.add_argument("--agent", help="Filter by agent name")
+    p_cost.set_defaults(func=cmd_cost)
+
+    p_forget = subs.add_parser("forget", help="Delete traces")
+    p_forget.add_argument("trace_id", nargs="?", default="", help="Trace ID to delete")
+    p_forget.add_argument("--agent", help="Delete all traces for an agent")
+    p_forget.set_defaults(func=cmd_forget)
+
+    p_prune = subs.add_parser("prune", help="Delete old traces")
+    p_prune.add_argument(
+        "--older-than", required=True, help="Duration threshold (e.g., 30d)"
+    )
+    p_prune.add_argument("--agent", help="Scope to a specific agent")
+    p_prune.set_defaults(func=cmd_prune)
 
     p_install = subs.add_parser("install", help="Install an adapter")
     p_install.add_argument(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +12,8 @@ from conftest import make_tool_record, make_trace
 from openflux.cli import (
     AVAILABLE_ADAPTERS,
     CLAUDE_CODE_HOOKS,
+    _bar,
+    _estimate_cost,
     _relative_time,
     _truncate,
     main,
@@ -407,17 +410,13 @@ class TestCmdInstall:
     ) -> None:
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.parent.mkdir(parents=True)
+        cmd = CLAUDE_CODE_HOOKS["SessionStart"]
         existing = {
             "hooks": {
                 "SessionStart": [
                     {
                         "matcher": "",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": CLAUDE_CODE_HOOKS["SessionStart"],
-                            }
-                        ],
+                        "hooks": [{"type": "command", "command": cmd}],
                     }
                 ]
             }
@@ -453,6 +452,394 @@ class TestCmdInstall:
         assert "installed via Python API" in out
 
 
+class TestCmdCost:
+    def test_cost_output(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(
+            db_path,
+            [
+                make_trace(
+                    agent="claude-code",
+                    model="claude-sonnet-4-20250514",
+                    token_usage=TokenUsage(input_tokens=100_000, output_tokens=25_000),
+                ),
+                make_trace(
+                    agent="langchain-rag",
+                    model="gpt-4o-mini",
+                    token_usage=TokenUsage(input_tokens=50_000, output_tokens=10_000),
+                ),
+            ],
+        )
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["cost", "--days", "7"], monkeypatch)
+        out = capsys.readouterr().out
+
+        assert "Token Usage (last 7 days)" in out
+        assert "Traces:" in out
+        assert "Input:" in out
+        assert "Output:" in out
+        assert "Total:" in out
+        assert "By model:" in out
+        assert "claude-sonnet-4-20250514" in out
+        assert "gpt-4o-mini" in out
+        assert "By agent:" in out
+        assert "claude-code" in out
+        assert "langchain-rag" in out
+
+    def test_cost_agent_filter(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(
+            db_path,
+            [
+                make_trace(
+                    agent="claude-code",
+                    model="claude-sonnet-4-20250514",
+                    token_usage=TokenUsage(input_tokens=100_000, output_tokens=25_000),
+                ),
+                make_trace(
+                    agent="other-agent",
+                    model="gpt-4o-mini",
+                    token_usage=TokenUsage(input_tokens=50_000, output_tokens=10_000),
+                ),
+            ],
+        )
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["cost", "--agent", "claude-code"], monkeypatch)
+        out = capsys.readouterr().out
+
+        # Only claude-code agent should appear
+        assert "claude-code" in out
+        assert "other-agent" not in out
+
+    def test_cost_empty_db(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(db_path, [])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["cost"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Traces:" in out
+        assert "0" in out
+
+    def test_cost_token_values(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify exact token sums with known values."""
+        db_path = tmp_path / "traces.db"
+        _populated_db(
+            db_path,
+            [
+                make_trace(
+                    agent="a",
+                    model="claude-sonnet-4-20250514",
+                    token_usage=TokenUsage(input_tokens=1_000, output_tokens=500),
+                ),
+                make_trace(
+                    agent="a",
+                    model="claude-sonnet-4-20250514",
+                    token_usage=TokenUsage(input_tokens=2_000, output_tokens=1_000),
+                ),
+            ],
+        )
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["cost"], monkeypatch)
+        out = capsys.readouterr().out
+        # Input: 3,000, Output: 1,500, Total: 4,500
+        assert "3,000" in out
+        assert "1,500" in out
+        assert "4,500" in out
+
+
+class TestCmdForget:
+    def test_forget_single(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        trace = make_trace(id="trc-deleteme00000")
+        _populated_db(db_path, [trace, make_trace()])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["forget", "trc-deleteme00000"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Deleted trace trc-deleteme00000" in out
+
+        # Verify it's actually gone
+        sink = SQLiteSink(path=db_path)
+        assert sink.get("trc-deleteme00000") is None
+        remaining = sink.recent(limit=100)
+        assert len(remaining) == 1
+        sink.close()
+
+    def test_forget_not_found(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(db_path, [make_trace()])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["forget", "trc-nonexistent00"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Trace not found" in out
+
+    def test_forget_by_agent(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(
+            db_path,
+            [
+                make_trace(agent="old-agent"),
+                make_trace(agent="old-agent"),
+                make_trace(agent="keep-agent"),
+            ],
+        )
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        # Simulate user typing "y" to confirm
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        _run_cli(["forget", "--agent", "old-agent"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Deleted 2 traces" in out
+
+        sink = SQLiteSink(path=db_path)
+        remaining = sink.recent(limit=100)
+        assert len(remaining) == 1
+        assert remaining[0].agent == "keep-agent"
+        sink.close()
+
+    def test_forget_by_agent_cancelled(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(db_path, [make_trace(agent="my-agent")])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        _run_cli(["forget", "--agent", "my-agent"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Cancelled" in out
+
+        # Trace should still exist
+        sink = SQLiteSink(path=db_path)
+        assert len(sink.recent(limit=100)) == 1
+        sink.close()
+
+    def test_forget_by_agent_none_found(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(db_path, [make_trace(agent="other")])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["forget", "--agent", "ghost"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "No traces found" in out
+
+
+class TestCmdPrune:
+    def test_prune_by_date(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        old_ts = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+        new_ts = datetime.now(UTC).isoformat()
+        _populated_db(
+            db_path,
+            [
+                make_trace(timestamp=old_ts, agent="old"),
+                make_trace(timestamp=old_ts, agent="old"),
+                make_trace(timestamp=new_ts, agent="new"),
+            ],
+        )
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        _run_cli(["prune", "--older-than", "30d"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Deleted 2 traces" in out
+        assert "DB size:" in out
+
+        sink = SQLiteSink(path=db_path)
+        remaining = sink.recent(limit=100)
+        assert len(remaining) == 1
+        assert remaining[0].agent == "new"
+        sink.close()
+
+    def test_prune_with_agent_scope(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        old_ts = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+        _populated_db(
+            db_path,
+            [
+                make_trace(timestamp=old_ts, agent="target"),
+                make_trace(timestamp=old_ts, agent="keep"),
+            ],
+        )
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        _run_cli(["prune", "--older-than", "30d", "--agent", "target"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Deleted 1 traces" in out
+
+        sink = SQLiteSink(path=db_path)
+        remaining = sink.recent(limit=100)
+        assert len(remaining) == 1
+        assert remaining[0].agent == "keep"
+        sink.close()
+
+    def test_prune_cancelled(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        old_ts = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+        _populated_db(db_path, [make_trace(timestamp=old_ts)])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        monkeypatch.setattr("builtins.input", lambda _: "n")
+        _run_cli(["prune", "--older-than", "30d"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Cancelled" in out
+
+    def test_prune_nothing_to_delete(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        new_ts = datetime.now(UTC).isoformat()
+        _populated_db(db_path, [make_trace(timestamp=new_ts)])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["prune", "--older-than", "30d"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "No matching traces" in out
+
+    def test_prune_invalid_duration(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(db_path, [make_trace()])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        with pytest.raises(SystemExit, match="1"):
+            _run_cli(["prune", "--older-than", "bad"], monkeypatch)
+
+
+class TestStatusTokens:
+    def test_status_shows_token_totals(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(
+            db_path,
+            [
+                make_trace(
+                    model="claude-sonnet-4-20250514",
+                    token_usage=TokenUsage(
+                        input_tokens=1_000_000, output_tokens=250_000
+                    ),
+                ),
+                make_trace(
+                    model="gpt-4o-mini",
+                    token_usage=TokenUsage(input_tokens=500_000, output_tokens=100_000),
+                ),
+            ],
+        )
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["status"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Token usage (all time):" in out
+        assert "1,500,000" in out
+        assert "350,000" in out
+        assert "Est. cost:" in out
+        assert "$" in out
+
+    def test_status_no_tokens(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No token usage section when all token counts are zero."""
+        db_path = tmp_path / "traces.db"
+        _populated_db(db_path, [make_trace()])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        _run_cli(["status"], monkeypatch)
+        out = capsys.readouterr().out
+        assert "Token usage" not in out
+
+
+class TestCostHelpers:
+    @pytest.mark.parametrize(
+        ("model", "expected_min"),
+        [
+            ("claude-sonnet-4-20250514", 3.0),
+            ("gpt-4o-mini", 0.15),
+            ("gpt-4o-2024-08-06", 2.5),
+            ("gemini-2.0-flash", 0.075),
+            ("unknown-model", 1.0),
+        ],
+    )
+    def test_estimate_cost_rates(self, model: str, expected_min: float) -> None:
+        # 1M input tokens, 0 output -> should match input rate exactly
+        cost = _estimate_cost(model, 1_000_000, 0)
+        assert abs(cost - expected_min) < 0.01
+
+    def test_bar_proportional(self) -> None:
+        full = _bar(100, 100, width=10)
+        half = _bar(50, 100, width=10)
+        assert len(full) == 10
+        assert len(half) == 5
+
+    def test_bar_zero_max(self) -> None:
+        assert _bar(0, 0, width=10) == ""
+
+    def test_bar_minimum_one(self) -> None:
+        # Even tiny values should show at least 1 block
+        bar = _bar(1, 1_000_000, width=12)
+        assert len(bar) >= 1
+
+
 class TestErrorCases:
     def test_no_subcommand(
         self,
@@ -477,6 +864,15 @@ class TestErrorCases:
         with pytest.raises(SystemExit):
             _run_cli(["trace"], monkeypatch)
 
+    def test_forget_no_args(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "traces.db"
+        _populated_db(db_path, [make_trace()])
+        monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
+        with pytest.raises(SystemExit, match="1"):
+            _run_cli(["forget"], monkeypatch)
+
 
 class TestHelp:
     def test_main_help(
@@ -488,7 +884,18 @@ class TestHelp:
         assert "openflux" in out.lower()
 
     @pytest.mark.parametrize(
-        "subcommand", ["recent", "search", "trace", "export", "status", "install"]
+        "subcommand",
+        [
+            "recent",
+            "search",
+            "trace",
+            "export",
+            "status",
+            "cost",
+            "forget",
+            "prune",
+            "install",
+        ],
     )
     def test_subcommand_help(
         self,
