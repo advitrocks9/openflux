@@ -30,8 +30,6 @@ from openflux.schema import (
     Trace,
 )
 
-logger = logging.getLogger(__name__)
-
 _HAS_LANGCHAIN = importlib.util.find_spec("langchain_core") is not None
 
 logger = logging.getLogger("openflux")
@@ -150,6 +148,10 @@ class _RunAccumulator:
     has_error: bool = False
     # Dedup set for context records to avoid duplicate system_prompt entries
     seen_context_hashes: set[str] = field(default_factory=lambda: set[str]())
+    # Pending tool state carried between on_tool_start and on_tool_end
+    pending_tool_name: str = ""
+    pending_tool_input: str = ""
+    pending_tool_timestamp: str = ""
 
 
 class OpenFluxCallbackHandler(BaseCallbackHandler):
@@ -246,36 +248,36 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             model = serialized.get("kwargs", {}).get("model_name", "")
             if model:
                 root.model = model
+
+            # Also check invocation_params (used by some providers like Google)
+            inv_params: dict[str, Any] = kwargs.get("invocation_params", {})
+            inv_model = inv_params.get("model_name", "") or inv_params.get("model", "")
+            if inv_model and not root.model:
+                root.model = inv_model
+
+            # Capture system prompts from message lists (dedup by content hash)
+            for message_list in messages:
+                for msg in message_list:
+                    msg_type: str = str(getattr(msg, "type", ""))
+                    if msg_type == "system":
+                        content: str = str(getattr(msg, "content", ""))
+                        if content:
+                            chash = content_hash(content)
+                            if chash in root.seen_context_hashes:
+                                continue
+                            root.seen_context_hashes.add(chash)
+                            root.context.append(
+                                ContextRecord(
+                                    type=ContextType.SYSTEM_PROMPT,
+                                    source="chat_model",
+                                    content_hash=chash,
+                                    content=content[:4096],
+                                    bytes=len(content.encode("utf-8")),
+                                    timestamp=utc_now(),
+                                )
+                            )
         except Exception:
             logger.warning("on_chat_model_start callback", exc_info=True)
-
-        # Also check invocation_params (used by some providers like Google)
-        inv_params: dict[str, Any] = kwargs.get("invocation_params", {})
-        inv_model = inv_params.get("model_name", "") or inv_params.get("model", "")
-        if inv_model and not root.model:
-            root.model = inv_model
-
-        # Capture system prompts from message lists (dedup by content hash)
-        for message_list in messages:
-            for msg in message_list:
-                msg_type: str = str(getattr(msg, "type", ""))
-                if msg_type == "system":
-                    content: str = str(getattr(msg, "content", ""))
-                    if content:
-                        chash = content_hash(content)
-                        if chash in root.seen_context_hashes:
-                            continue
-                        root.seen_context_hashes.add(chash)
-                        root.context.append(
-                            ContextRecord(
-                                type=ContextType.SYSTEM_PROMPT,
-                                source="chat_model",
-                                content_hash=chash,
-                                content=content[:4096],
-                                bytes=len(content.encode("utf-8")),
-                                timestamp=utc_now(),
-                            )
-                        )
 
     def on_llm_end(
         self,
@@ -302,15 +304,15 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             model: str = str(llm_output.get("model_name", ""))
             if model:
                 root.model = model
+
+            # Fallback: model from generation_info (Google providers)
+            if not root.model:
+                self._extract_model_from_generations(response, root)
+
+            # LangGraph: capture tool_calls from AIMessage as reasoning metadata
+            self._extract_tool_calls_from_generations(response, root)
         except Exception:
             logger.warning("on_llm_end callback", exc_info=True)
-
-        # Fallback: model from generation_info (Google providers)
-        if not root.model:
-            self._extract_model_from_generations(response, root)
-
-        # LangGraph: capture tool_calls from AIMessage as reasoning metadata
-        self._extract_tool_calls_from_generations(response, root)
 
     @staticmethod
     def _extract_tokens_from_generations(response: Any, root: _RunAccumulator) -> None:

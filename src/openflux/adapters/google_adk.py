@@ -159,6 +159,7 @@ class GoogleADKAdapter:
             sid = self._session_id_from_context(callback_context)
             with self._lock:
                 acc = self._get_or_create(sid)
+                acc.llm_turn_count += 1
 
             model = getattr(llm_response, "model", "") or ""
             if model:

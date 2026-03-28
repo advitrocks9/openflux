@@ -226,6 +226,7 @@ class ClaudeAgentSDKAdapter:
             trace = self._build_trace(acc)
             with self._lock:
                 self._completed.append(trace)
+                self._trace_index[session_id] = len(self._completed) - 1
 
             if self._on_trace:
                 self._on_trace(trace)

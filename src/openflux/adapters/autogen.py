@@ -90,6 +90,7 @@ class AutoGenStreamConsumer:
                     self._acc = _RunAccumulator(
                         session_id=generate_session_id(),
                         started_at=utc_now(),
+                        _start_mono=time.monotonic(),
                     )
 
             match type(message).__name__:

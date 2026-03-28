@@ -180,6 +180,8 @@ class OpenFluxProcessor(TracingProcessor):
             if acc is None:
                 return
 
+            self._update_span_timestamps(span, acc)
+
             span_data = getattr(span, "span_data", None)
             if span_data is None:
                 return
