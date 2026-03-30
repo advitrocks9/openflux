@@ -12,6 +12,10 @@ export default defineConfig({
         entryFileNames: "assets/app.js",
         chunkFileNames: "assets/[name].js",
         assetFileNames: "assets/[name][extname]",
+        manualChunks: {
+          recharts: ["recharts"],
+          motion: ["motion/react"],
+        },
       },
     },
   },

@@ -50,7 +50,6 @@ export function estimateCost(
   outputTokens: number,
   model: string,
 ): number {
-  // Per million tokens
   const rates: Record<string, [number, number]> = {
     "claude-sonnet": [3, 15],
     "claude-opus": [15, 75],

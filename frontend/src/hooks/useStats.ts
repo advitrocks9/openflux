@@ -27,7 +27,7 @@ export function useStats(): UseStatsResult {
           setTimeline(timelineRes.days);
         }
       } catch {
-        // Stats are non-critical; silently degrade
+        // non-critical
       } finally {
         if (!cancelled) setLoading(false);
       }

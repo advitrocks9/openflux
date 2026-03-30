@@ -3,7 +3,6 @@ import { useEffect } from "react";
 export function useKeyboard(shortcuts: Record<string, () => void>): void {
   useEffect(() => {
     function handler(e: KeyboardEvent) {
-      // Build key string: "Meta+k", "Shift+Enter", or just "k"
       const parts: string[] = [];
       if (e.metaKey) parts.push("Meta");
       if (e.ctrlKey) parts.push("Control");

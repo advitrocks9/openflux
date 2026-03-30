@@ -49,62 +49,76 @@ export function FilterBar({
   }, [search]);
 
   return (
-    <div className="flex items-center gap-3 border-b border-border px-4 py-2">
-      {/* Status chips */}
-      <div className="flex items-center gap-1.5">
-        {STATUS_CHIPS.map((chip) => (
-          <button
-            key={chip.value}
-            type="button"
-            onClick={() => onStatusChange(chip.value)}
-            className={
-              status === chip.value
-                ? "rounded bg-accent px-2.5 py-1 text-xs font-medium text-white"
-                : "cursor-pointer rounded bg-surface px-2.5 py-1 text-xs font-medium text-secondary transition-colors duration-150 hover:bg-accent-subtle"
-            }
-          >
-            {chip.label}
-          </button>
-        ))}
+    <div className="flex items-center gap-3 border-b border-border px-5 py-2.5">
+      <div className="flex items-center gap-1">
+        {STATUS_CHIPS.map((chip) => {
+          const isActive = status === chip.value;
+          return (
+            <button
+              key={chip.value}
+              type="button"
+              onClick={() => onStatusChange(chip.value)}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-all duration-200 ${
+                isActive
+                  ? "bg-accent text-white shadow-sm"
+                  : "text-secondary hover:text-primary hover:bg-surface"
+              }`}
+            >
+              {chip.label}
+            </button>
+          );
+        })}
       </div>
 
-      {/* Agent dropdown */}
-      <select
-        value={agent}
-        onChange={(e) => onAgentChange(e.target.value)}
-        className="rounded border border-border bg-surface px-2 py-1 text-xs text-primary"
-      >
-        <option value="">All agents</option>
-        {agents.map((a) => (
-          <option key={a} value={a}>
-            {a}
-          </option>
-        ))}
-      </select>
+      <div className="h-4 w-px bg-border" />
 
-      {/* Spacer */}
-      <div className="flex-1" />
-
-      {/* Search input */}
       <div className="relative">
+        <select
+          value={agent}
+          onChange={(e) => onAgentChange(e.target.value)}
+          className="appearance-none rounded-md border border-border bg-surface pl-2.5 pr-7 py-1 text-xs text-primary cursor-pointer hover:bg-surface-hover transition-colors duration-200"
+        >
+          <option value="">All agents</option>
+          {agents.map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
+        </select>
         <svg
-          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary"
-          viewBox="0 0 16 16"
+          className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-tertiary"
+          viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.5"
+          strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
         >
-          <circle cx="7" cy="7" r="5" />
-          <path d="M11 11l3.5 3.5" />
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </div>
+
+      <div className="flex-1" />
+
+      <div className="relative">
+        <svg
+          className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tertiary"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
         </svg>
         <input
           type="text"
           value={localSearch}
           onChange={(e) => handleSearchInput(e.target.value)}
           placeholder="Search traces..."
-          className="w-64 rounded-md border border-border bg-surface py-1.5 pl-8 pr-3 text-sm text-primary placeholder:text-tertiary"
+          className="w-56 rounded-md border border-border bg-surface py-1.5 pl-9 pr-3 text-sm text-primary placeholder:text-tertiary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-all duration-200"
         />
       </div>
     </div>

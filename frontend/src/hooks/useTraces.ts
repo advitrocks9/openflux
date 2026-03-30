@@ -28,7 +28,7 @@ export function useTraces(params: UseTracesParams = {}): UseTracesResult {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(1);
 
   const fetch = useCallback(async () => {
     setLoading(true);
@@ -36,7 +36,7 @@ export function useTraces(params: UseTracesParams = {}): UseTracesResult {
     try {
       const res = await fetchTraces({
         limit,
-        offset: page * limit,
+        offset: (page - 1) * limit,
         agent,
         search,
         status,
@@ -68,9 +68,8 @@ export function useTraces(params: UseTracesParams = {}): UseTracesResult {
     void fetch();
   }, [fetch]);
 
-  // Reset to first page when filters change
   useEffect(() => {
-    setPage(0);
+    setPage(1);
   }, [agent, search, status, sort, order]);
 
   return { traces, total, loading, error, page, setPage, refetch: fetch };

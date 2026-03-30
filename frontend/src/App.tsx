@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { Layout } from "./components/Layout";
 import { TraceTable } from "./components/TraceTable";
 import { TraceDetail } from "./components/TraceDetail";
@@ -21,19 +22,15 @@ const PAGE_SIZE = 50;
 export function App() {
   const [view, setView] = useState<View>(getViewFromHash);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
-  const [isDark, setIsDark] = useState(
-    () => document.body.classList.contains("dark"),
-  );
+  const [isDark, setIsDark] = useState(() => !document.body.classList.contains("light"));
   const [cmdkOpen, setCmdkOpen] = useState(false);
 
-  // Filter state
   const [statusFilter, setStatusFilter] = useState("");
   const [agentFilter, setAgentFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [sort, setSort] = useState("timestamp");
   const [order, setOrder] = useState<"asc" | "desc">("desc");
 
-  // Data hooks
   const {
     traces,
     total,
@@ -49,20 +46,16 @@ export function App() {
     order,
   });
 
-  const {
-    trace: selectedTrace,
-    loading: traceLoading,
-  } = useTrace(selectedTraceId);
+  const { trace: selectedTrace, loading: traceLoading } =
+    useTrace(selectedTraceId);
 
   const { stats, timeline, loading: statsLoading } = useStats();
 
-  // Unique agent names for filter dropdown
   const agents = useMemo(() => {
     const set = new Set(traces.map((t) => t.agent));
     return Array.from(set).sort();
   }, [traces]);
 
-  // Hash routing
   useEffect(() => {
     function onHashChange() {
       setView(getViewFromHash());
@@ -80,7 +73,7 @@ export function App() {
   const handleToggleDark = useCallback(() => {
     setIsDark((prev) => {
       const next = !prev;
-      document.body.classList.toggle("dark", next);
+      document.body.classList.toggle("light", !next);
       return next;
     });
   }, []);
@@ -97,7 +90,6 @@ export function App() {
     setSelectedTraceId(null);
   }, []);
 
-  // Keyboard shortcuts
   useKeyboard({
     Escape: handleCloseDetail,
     "Meta+k": () => setCmdkOpen(true),
@@ -141,15 +133,25 @@ export function App() {
                 />
               </div>
             </div>
-            {selectedTraceId && (
-              <div className="w-[480px] flex-shrink-0 border-l border-border overflow-hidden">
-                <TraceDetail
-                  trace={selectedTrace}
-                  loading={traceLoading}
-                  onClose={handleCloseDetail}
-                />
-              </div>
-            )}
+            <AnimatePresence>
+              {selectedTraceId && (
+                <motion.div
+                  initial={{ width: 0, opacity: 0 }}
+                  animate={{ width: 520, opacity: 1 }}
+                  exit={{ width: 0, opacity: 0 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className="flex-shrink-0 border-l border-border overflow-hidden"
+                >
+                  <div className="w-[520px] h-full">
+                    <TraceDetail
+                      trace={selectedTrace}
+                      loading={traceLoading}
+                      onClose={handleCloseDetail}
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         ) : (
           <div className="overflow-auto h-full">
