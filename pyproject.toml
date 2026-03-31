@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openflux"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Open standard for AI agent telemetry. One schema across every framework."
 readme = "README.md"
 license = "MIT"
@@ -54,6 +54,9 @@ openflux = "openflux.cli:main"
 Homepage = "https://github.com/advitrocks9/openflux"
 Documentation = "https://github.com/advitrocks9/openflux/tree/main/docs"
 Repository = "https://github.com/advitrocks9/openflux"
+
+[tool.hatch.version]
+path = "src/openflux/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openflux"]

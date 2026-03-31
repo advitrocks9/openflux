@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 (2026-03-30)
+
+### Features
+- Web dashboard (`openflux serve`) with dark-first UI, trace explorer, detail panel, stats charts
+- `openflux cost` command for token usage and cost breakdown by model/agent/day
+- `openflux forget` and `openflux prune` commands for trace management
+- Tabbed trace detail panel (overview, tools, sources, raw JSON)
+- Command palette (Cmd+K) for quick navigation
+- Dark/light mode toggle
+
+### Improvements
+- Frontend built with React 19, Tailwind CSS 4, Recharts, motion
+- Code-split recharts + motion into separate chunks for faster loads
+- Stacked bar charts for token usage, emerald bars for daily trace counts
+- Dynamic version via hatchling (single source of truth in `__init__.py`)
+- GitHub Actions release pipeline for automated PyPI publish on tag push
+
 ## 0.1.1 (2026-03-28)
 
 ### Bug fixes
