@@ -195,6 +195,8 @@ class OpenFluxProcessor(TracingProcessor):
                     self._handle_agent_span(span_data, acc)
                 case "GenerationSpanData":
                     self._handle_generation_span(span_data, acc)
+                case "ResponseSpanData":
+                    self._handle_response_span(span_data, acc)
                 case "FunctionSpanData":
                     self._handle_function_span(span, span_data, acc)
                 case "HandoffSpanData":
@@ -237,10 +239,24 @@ class OpenFluxProcessor(TracingProcessor):
         name: str = str(getattr(span_data, "name", ""))
         if name:
             acc.agent_name = name
-        # AgentSpanData has no instructions field - system prompts can't be captured
+            if name not in acc.tags:
+                acc.tags.append(name)
         output_type: str | None = getattr(span_data, "output_type", None)
         if output_type:
             acc.metadata["output_type"] = str(output_type)
+        # Capture tool names from AgentSpanData for tags
+        tools_list = getattr(span_data, "tools", None)
+        if tools_list and isinstance(tools_list, (list, tuple)):
+            acc.metadata["agent_tools"] = [str(t) for t in tools_list]
+        # Capture handoffs
+        handoffs = getattr(span_data, "handoffs", None)
+        if (
+            handoffs
+            and isinstance(handoffs, (list, tuple))
+            and len(handoffs) > 0
+            and "handoff" not in acc.tags
+        ):
+            acc.tags.append("handoff")
 
     def _handle_generation_span(self, span_data: Any, acc: _TraceAccumulator) -> None:
         acc.generation_count += 1
@@ -304,6 +320,74 @@ class OpenFluxProcessor(TracingProcessor):
                             timestamp=utc_now(),
                         )
                     )
+
+    def _handle_response_span(self, span_data: Any, acc: _TraceAccumulator) -> None:
+        """Handle ResponseSpanData (OpenAI Agents SDK v1.x+)."""
+        acc.generation_count += 1
+        response = getattr(span_data, "response", None)
+        if response is None:
+            return
+        # Model
+        model = str(getattr(response, "model", "") or "")
+        if model:
+            acc.model = model
+        # Token usage from ResponseUsage object
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            acc.token_usage.input_tokens += int(
+                getattr(usage, "input_tokens", 0) or 0
+            )
+            acc.token_usage.output_tokens += int(
+                getattr(usage, "output_tokens", 0) or 0
+            )
+            # Cache tokens from input_tokens_details
+            details = getattr(usage, "input_tokens_details", None)
+            if details:
+                acc.token_usage.cache_read_tokens += int(
+                    getattr(details, "cached_tokens", 0) or 0
+                )
+        # Task from first user message in input
+        raw_input = getattr(span_data, "input", None)
+        if raw_input and isinstance(raw_input, (list, tuple)) and not acc.task:
+            for msg in raw_input:
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    text = str(msg.get("content", ""))
+                    if text:
+                        acc.task = text[:2048]
+                    break
+        # System prompt from response.instructions
+        instructions = str(getattr(response, "instructions", "") or "")
+        if instructions:
+            h = content_hash(instructions)
+            if h not in acc.seen_context_hashes:
+                acc.seen_context_hashes.add(h)
+                acc.context.append(
+                    ContextRecord(
+                        type=ContextType.SYSTEM_PROMPT,
+                        source="agent_instructions",
+                        content_hash=h,
+                        content=instructions[:4096],
+                        bytes=len(instructions.encode("utf-8")),
+                        timestamp=utc_now(),
+                    )
+                )
+        # Decision from last assistant output
+        output = getattr(response, "output", None)
+        if output and isinstance(output, (list, tuple)):
+            for item in reversed(output):
+                role = getattr(item, "role", None)
+                if role == "assistant":
+                    # content is a list of ResponseOutputText objects
+                    content_parts = getattr(item, "content", None)
+                    if content_parts and isinstance(content_parts, (list, tuple)):
+                        texts = []
+                        for part in content_parts:
+                            text = getattr(part, "text", None)
+                            if text:
+                                texts.append(str(text))
+                        if texts:
+                            acc.last_generation_output = "\n".join(texts)[:2048]
+                    break
 
     def _handle_function_span(
         self, span: Any, span_data: Any, acc: _TraceAccumulator
@@ -406,6 +490,10 @@ class OpenFluxProcessor(TracingProcessor):
         duration_ms = _compute_duration_ms(acc.first_span_at, acc.last_span_at)
         # scope defaults to agent name, falling back to task/workflow name
         scope = acc.agent_name or acc.task or None
+        # Ensure framework tag is present
+        tags = list(acc.tags)
+        if "openai-agents" not in tags:
+            tags.append("openai-agents")
         return Trace(
             id=generate_trace_id(),
             timestamp=acc.started_at or utc_now(),
@@ -417,7 +505,7 @@ class OpenFluxProcessor(TracingProcessor):
             decision=acc.last_generation_output,
             status=Status.ERROR if acc.has_error else Status.COMPLETED,
             scope=scope,
-            tags=acc.tags,
+            tags=tags,
             context=acc.context,
             tools_used=acc.tools,
             searches=acc.searches,

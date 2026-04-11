@@ -25,12 +25,12 @@ REQUIRED = [
     "context",
     "tools_used",
     "turn_count",
-    "token_usage",
     "duration_ms",
     "metadata",
     "schema_version",
 ]
-NA = ["parent_id", "correction", "files_modified"]
+# token_usage: CrewAI events don't expose token counts
+NA = ["parent_id", "correction", "files_modified", "token_usage"]
 
 
 @pytest.fixture()
@@ -63,12 +63,11 @@ def test_crewai_crew_with_tools(db_path):
 
     os.environ["OPENFLUX_DB_PATH"] = db_path
 
-    sink = SQLiteSink(path=db_path)
     traces_captured = []
 
     listener = OpenFluxCrewListener(
         agent="math-crew",
-        on_trace=lambda t: (traces_captured.append(t), sink.write(t)),
+        on_trace=lambda t: traces_captured.append(t),
     )
     listener.setup_listeners(crewai_event_bus)
 
@@ -100,6 +99,10 @@ def test_crewai_crew_with_tools(db_path):
 
     assert len(traces_captured) >= 1, "No traces captured"
 
+    # Write from main thread to avoid SQLite cross-thread errors
+    sink = SQLiteSink(path=db_path)
+    for t in traces_captured:
+        sink.write(t)
     sink.close()
 
     trace, coverage = check_trace(db_path, required=REQUIRED, na=NA)

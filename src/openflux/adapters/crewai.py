@@ -251,6 +251,27 @@ class OpenFluxCrewListener(BaseEventListener):
                             timestamp=utc_now(),
                         )
                     )
+
+                # Capture system prompts from messages as context
+                messages = getattr(event, "messages", None)
+                if messages and isinstance(messages, (list, tuple)):
+                    for msg in messages:
+                        if isinstance(msg, dict) and msg.get("role") == "system":
+                            text = str(msg.get("content", ""))
+                            if text:
+                                h = content_hash(text)
+                                if h not in acc._context_hashes:
+                                    acc._context_hashes.add(h)
+                                    acc.context.append(
+                                        ContextRecord(
+                                            type=ContextType.SYSTEM_PROMPT,
+                                            source="crewai-agent",
+                                            content_hash=h,
+                                            content=text[:4096],
+                                            bytes=len(text.encode("utf-8")),
+                                            timestamp=utc_now(),
+                                        )
+                                    )
             except Exception:
                 logger.warning("llm_completed callback", exc_info=True)
 

@@ -1,11 +1,11 @@
 """Bedrock acceptance test - simulated event streams, exactly how a real user feeds boto3 data."""
 
 import pytest
-from helpers import check_trace
 
 from openflux._util import utc_now
 from openflux.adapters.bedrock import BedrockAdapter
 from openflux.sinks.sqlite import SQLiteSink
+from tests.acceptance.helpers import check_trace
 
 
 @pytest.fixture()

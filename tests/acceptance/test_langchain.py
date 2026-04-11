@@ -75,7 +75,7 @@ def test_langchain_gemini_full_telemetry(tmp_path):
 
     assert result is not None
 
-    from tests.acceptance.conftest import check_trace
+    from tests.acceptance.helpers import check_trace
 
     required = [
         "id",

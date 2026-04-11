@@ -3,7 +3,8 @@
 import asyncio
 
 import pytest
-from helpers import check_trace
+
+from tests.acceptance.helpers import check_trace
 
 
 @pytest.fixture()

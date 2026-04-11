@@ -63,7 +63,7 @@ def test_openai_agents_full_telemetry(tmp_path):
 
     assert result.final_output is not None
 
-    from tests.acceptance.conftest import check_trace
+    from tests.acceptance.helpers import check_trace
 
     required = [
         "id",

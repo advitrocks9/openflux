@@ -81,7 +81,7 @@ def test_google_adk_full_telemetry(tmp_path):
     traces = callbacks._adapter.flush()
     assert len(traces) >= 1
 
-    from helpers import check_trace
+    from tests.acceptance.helpers import check_trace
 
     required = [
         "id",

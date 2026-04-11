@@ -2608,7 +2608,6 @@ wheels = [
 
 [[package]]
 name = "openflux"
-version = "0.1.1"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -2659,25 +2658,26 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "autogen-agentchat", marker = "extra == 'all'", specifier = ">=0.4" },
     { name = "autogen-agentchat", marker = "extra == 'autogen'", specifier = ">=0.4" },
+    { name = "autogen-ext", extras = ["openai"], marker = "extra == 'all'", specifier = ">=0.4" },
     { name = "autogen-ext", extras = ["openai"], marker = "extra == 'autogen'", specifier = ">=0.4" },
+    { name = "boto3", marker = "extra == 'all'", specifier = ">=1.28" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.28" },
+    { name = "claude-agent-sdk", marker = "extra == 'all'", specifier = ">=0.1" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.1" },
+    { name = "crewai", extras = ["tools"], marker = "extra == 'all'", specifier = ">=0.80" },
     { name = "crewai", extras = ["tools"], marker = "extra == 'crewai'", specifier = ">=0.80" },
+    { name = "google-adk", marker = "extra == 'all'", specifier = ">=0.1" },
     { name = "google-adk", marker = "extra == 'google-adk'", specifier = ">=0.1" },
+    { name = "langchain-core", marker = "extra == 'all'", specifier = ">=0.1" },
     { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.1" },
+    { name = "mcp", marker = "extra == 'all'", specifier = ">=1.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "openai-agents", marker = "extra == 'all'", specifier = ">=0.1" },
     { name = "openai-agents", marker = "extra == 'openai'", specifier = ">=0.1" },
-    { name = "openflux", extras = ["autogen"], marker = "extra == 'all'" },
-    { name = "openflux", extras = ["bedrock"], marker = "extra == 'all'" },
-    { name = "openflux", extras = ["claude-agent-sdk"], marker = "extra == 'all'" },
-    { name = "openflux", extras = ["crewai"], marker = "extra == 'all'" },
-    { name = "openflux", extras = ["google-adk"], marker = "extra == 'all'" },
-    { name = "openflux", extras = ["langchain"], marker = "extra == 'all'" },
-    { name = "openflux", extras = ["mcp"], marker = "extra == 'all'" },
-    { name = "openflux", extras = ["openai"], marker = "extra == 'all'" },
 ]
-provides-extras = ["openai", "langchain", "claude-agent-sdk", "autogen", "crewai", "google-adk", "mcp", "bedrock", "all"]
+provides-extras = ["all", "autogen", "bedrock", "claude-agent-sdk", "crewai", "google-adk", "langchain", "mcp", "openai"]
 
 [package.metadata.requires-dev]
 dev = [

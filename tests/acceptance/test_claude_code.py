@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from helpers import check_trace
 
 from openflux._util import generate_session_id
 from openflux.adapters._claude_code import (
@@ -21,6 +20,7 @@ from openflux.adapters._claude_code import (
     handle_session_end,
     handle_session_start,
 )
+from tests.acceptance.helpers import check_trace
 
 
 @pytest.fixture()
