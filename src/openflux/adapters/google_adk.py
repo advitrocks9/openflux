@@ -36,7 +36,13 @@ except (ModuleNotFoundError, ValueError):
 
 
 _HANDOFF_TOOL = "transfer_to_agent"
-_DEFAULT_SEARCH_TOOLS: set[str] = {"google_search", "web_search", "search", "retrieve"}
+_DEFAULT_SEARCH_TOOLS: set[str] = {
+    "google_search",
+    "web_search",
+    "search_web",
+    "search",
+    "retrieve",
+}
 _DEFAULT_SOURCE_TOOLS: set[str] = {
     "read_file",
     "fetch_url",
@@ -114,8 +120,12 @@ class GoogleADKAdapter:
                 return str(sid)
         return getattr(ctx, "agent_name", "") or "unknown"
 
-    def _before_model(self, callback_context: Any, llm_request: Any) -> None:
+    def _before_model(self, **kwargs: Any) -> None:
         try:
+            callback_context = kwargs.get("callback_context")
+            llm_request = kwargs.get("llm_request")
+            if callback_context is None:
+                return
             sid = self._session_id_from_context(callback_context)
             with self._lock:
                 acc = self._get_or_create(sid)
@@ -124,7 +134,29 @@ class GoogleADKAdapter:
             if agent_name:
                 acc.agent_name = agent_name
 
+            if llm_request is None:
+                return
+
+            # Capture task from user message
+            contents = getattr(llm_request, "contents", None)
+            if contents and not acc.task:
+                for content_item in contents:
+                    if getattr(content_item, "role", "") == "user":
+                        parts = getattr(content_item, "parts", [])
+                        for part in parts:
+                            text = getattr(part, "text", "")
+                            if text:
+                                acc.task = str(text)[:2048]
+                                break
+                        if acc.task:
+                            break
+
             instructions = getattr(llm_request, "system_instruction", None)
+            # ADK may put instructions in config.system_instruction
+            if instructions is None:
+                config = getattr(llm_request, "config", None)
+                if config:
+                    instructions = getattr(config, "system_instruction", None)
             if instructions:
                 text = _extract_text(instructions)
                 if text:
@@ -141,14 +173,23 @@ class GoogleADKAdapter:
         except Exception:
             logger.warning("before_model callback", exc_info=True)
 
-    def _after_model(self, callback_context: Any, llm_response: Any) -> None:
+    def _after_model(self, **kwargs: Any) -> None:
         try:
+            callback_context = kwargs.get("callback_context")
+            llm_response = kwargs.get("llm_response")
+            if callback_context is None or llm_response is None:
+                return
             sid = self._session_id_from_context(callback_context)
             with self._lock:
                 acc = self._get_or_create(sid)
                 acc.llm_turn_count += 1
 
-            model = getattr(llm_response, "model", "") or ""
+            # model_version is the correct attribute in current ADK
+            model = (
+                getattr(llm_response, "model_version", "")
+                or getattr(llm_response, "model", "")
+                or ""
+            )
             if model:
                 acc.model = model
 
@@ -164,11 +205,24 @@ class GoogleADKAdapter:
             content = getattr(llm_response, "content", None)
             if content:
                 _detect_handoffs(content, acc)
+                # Capture decision from text parts of the response
+                parts = getattr(content, "parts", None)
+                if parts:
+                    texts = []
+                    for part in parts:
+                        text = getattr(part, "text", "")
+                        if text:
+                            texts.append(text)
+                    if texts:
+                        acc.decision = "\n".join(texts)[:2048]
         except Exception:
             logger.warning("after_model callback", exc_info=True)
 
-    def _before_tool(self, tool: Any, args: dict[str, Any], tool_context: Any) -> None:
+    def _before_tool(self, **kwargs: Any) -> None:
         try:
+            tool_context = kwargs.get("tool_context")
+            if tool_context is None:
+                return
             sid = self._session_id_from_context(tool_context)
             with self._lock:
                 acc = self._get_or_create(sid)
@@ -179,14 +233,15 @@ class GoogleADKAdapter:
         except Exception:
             logger.warning("before_tool callback", exc_info=True)
 
-    def _after_tool(
-        self,
-        tool: Any,
-        args: dict[str, Any],
-        tool_context: Any,
-        tool_response: Any,
-    ) -> None:
+    def _after_tool(self, **kwargs: Any) -> None:
         try:
+            tool = kwargs.get("tool")
+            args = kwargs.get("args", {})
+            tool_context = kwargs.get("tool_context")
+            tool_response = kwargs.get("tool_response")
+            if tool_context is None:
+                return
+
             sid = self._session_id_from_context(tool_context)
             with self._lock:
                 acc = self._get_or_create(sid)
@@ -224,6 +279,39 @@ class GoogleADKAdapter:
                         timestamp=now,
                     )
                 )
+
+            # Source tools → SourceRecord
+            if tool_name.lower() in self._source_tools:
+                path = ""
+                if isinstance(args, dict):
+                    path = (
+                        args.get("filename", "")
+                        or args.get("file_path", "")
+                        or args.get("path", "")
+                        or args.get("url", "")
+                    )
+                acc.sources.append(
+                    SourceRecord(
+                        type="file",
+                        path=str(path),
+                        content_hash=content_hash(result_str) if result_str else "",
+                        tool=tool_name,
+                        bytes_read=len(result_str.encode("utf-8")) if result_str else 0,
+                        timestamp=now,
+                    )
+                )
+
+            # Write tools → files_modified
+            if tool_name.lower() in self._write_tools:
+                path = ""
+                if isinstance(args, dict):
+                    path = (
+                        args.get("filename", "")
+                        or args.get("file_path", "")
+                        or args.get("path", "")
+                    )
+                if path and path not in acc.files_modified:
+                    acc.files_modified.append(str(path))
         except Exception:
             logger.warning("after_tool callback", exc_info=True)
 
@@ -251,6 +339,10 @@ class GoogleADKAdapter:
         if acc.model:
             tags.append(acc.model)
 
+        metadata: dict[str, Any] = {**acc.metadata}
+        if acc.agent_name:
+            metadata["agent_name"] = acc.agent_name
+
         return Trace(
             id=generate_trace_id(),
             timestamp=acc.started_at or now,
@@ -270,7 +362,7 @@ class GoogleADKAdapter:
             token_usage=acc.token_usage,
             turn_count=acc.llm_turn_count,
             duration_ms=duration_ms,
-            metadata=acc.metadata,
+            metadata=metadata,
         )
 
     @property

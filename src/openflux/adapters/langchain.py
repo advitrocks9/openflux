@@ -56,6 +56,21 @@ _DEFAULT_SEARCH_TOOLS: set[str] = {
     "searx_search",
 }
 
+_DEFAULT_FILE_READ_TOOLS: set[str] = {
+    "read_file",
+    "file_reader",
+    "load_file",
+    "read_document",
+}
+
+_DEFAULT_FILE_WRITE_TOOLS: set[str] = {
+    "write_file",
+    "file_writer",
+    "save_file",
+    "create_file",
+    "edit_file",
+}
+
 
 @dataclass(slots=True)
 class _RunAccumulator:
@@ -77,6 +92,7 @@ class _RunAccumulator:
     metadata: dict[str, Any] = field(default_factory=dict)
     has_error: bool = False
     seen_context_hashes: set[str] = field(default_factory=set)
+    turn_count: int = 0
     # Pending tool state carried between on_tool_start and on_tool_end
     pending_tool_name: str = ""
     pending_tool_input: str = ""
@@ -99,8 +115,8 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         self._agent = agent
         self._on_trace = on_trace
         self._search_tools = search_tools or _DEFAULT_SEARCH_TOOLS
-        # file_read_tools and file_write_tools accepted for API compat
-        _ = file_read_tools, file_write_tools
+        self._file_read_tools = file_read_tools or _DEFAULT_FILE_READ_TOOLS
+        self._file_write_tools = file_write_tools or _DEFAULT_FILE_WRITE_TOOLS
         self._default_scope = scope
         self._lock = threading.Lock()
         self._runs: dict[str, _RunAccumulator] = {}
@@ -126,6 +142,13 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                     self._top_level_runs.add(key)
             return self._runs[key]
 
+    def _get_root(
+        self, run_id: UUID, parent_run_id: UUID | None = None
+    ) -> _RunAccumulator:
+        """Ensure run entry exists, then return the root accumulator."""
+        self._get_or_create_run(run_id, parent_run_id)
+        return self._find_root_run(run_id) or self._runs[str(run_id)]
+
     def _find_root_run(self, run_id: UUID) -> _RunAccumulator | None:
         key = str(run_id)
         visited: set[str] = set()
@@ -150,10 +173,12 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
-            root = self._find_root_run(run_id) or self._get_or_create_run(
-                run_id, parent_run_id
+            root = self._get_root(run_id, parent_run_id)
+            model = (
+                serialized.get("kwargs", {}).get("model_name", "")
+                if serialized
+                else ""
             )
-            model = serialized.get("kwargs", {}).get("model_name", "")
             if model:
                 root.model = model
         except Exception:
@@ -169,10 +194,12 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
-            root = self._find_root_run(run_id) or self._get_or_create_run(
-                run_id, parent_run_id
+            root = self._get_root(run_id, parent_run_id)
+            model = (
+                serialized.get("kwargs", {}).get("model_name", "")
+                if serialized
+                else ""
             )
-            model = serialized.get("kwargs", {}).get("model_name", "")
             if model:
                 root.model = model
 
@@ -215,9 +242,8 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
-            root = self._find_root_run(run_id) or self._get_or_create_run(
-                run_id, parent_run_id
-            )
+            root = self._get_root(run_id, parent_run_id)
+            root.turn_count = getattr(root, "turn_count", 0) + 1
             llm_output: dict[str, Any] = getattr(response, "llm_output", None) or {}
             token_usage: dict[str, Any] = llm_output.get("token_usage", {})
             if token_usage:
@@ -228,6 +254,10 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                     token_usage.get("completion_tokens", 0)
                 )
 
+            # Fallback: usage from message.usage_metadata (Google/LangChain)
+            if not token_usage:
+                self._extract_usage_from_generations(response, root)
+
             model: str = str(llm_output.get("model_name", ""))
             if model:
                 root.model = model
@@ -235,6 +265,9 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             # Fallback: model from generation_info (Google providers)
             if not root.model:
                 self._extract_model_from_generations(response, root)
+
+            # Capture decision from last assistant message
+            self._extract_decision_from_generations(response, root)
 
             # LangGraph: capture tool_calls from AIMessage as reasoning metadata
             self._extract_tool_calls_from_generations(response, root)
@@ -295,6 +328,40 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                             }
                         )
 
+    @staticmethod
+    def _extract_usage_from_generations(
+        response: Any, root: _RunAccumulator
+    ) -> None:
+        """Extract token usage from message.usage_metadata (Google etc.)."""
+        for gen_list in getattr(response, "generations", []):
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                if msg is None:
+                    continue
+                usage = getattr(msg, "usage_metadata", None)
+                if usage and isinstance(usage, dict):
+                    root.token_usage.input_tokens += int(
+                        usage.get("input_tokens", 0)
+                    )
+                    root.token_usage.output_tokens += int(
+                        usage.get("output_tokens", 0)
+                    )
+                    return
+
+    @staticmethod
+    def _extract_decision_from_generations(
+        response: Any, root: _RunAccumulator
+    ) -> None:
+        """Capture text content from the last AI message as decision."""
+        for gen_list in getattr(response, "generations", []):
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                if msg is None:
+                    continue
+                content = getattr(msg, "content", "")
+                if content and isinstance(content, str):
+                    root.decision = content[:4096]
+
     def on_tool_start(
         self,
         serialized: dict[str, Any],
@@ -305,10 +372,8 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
-            root = self._find_root_run(run_id) or self._get_or_create_run(
-                run_id, parent_run_id
-            )
-            root.pending_tool_name = serialized.get("name", "")
+            root = self._get_root(run_id, parent_run_id)
+            root.pending_tool_name = serialized.get("name", "") if serialized else ""
             root.pending_tool_input = str(input_str)[:4096]
             root.pending_tool_timestamp = utc_now()
         except Exception:
@@ -323,17 +388,49 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
-            root = self._find_root_run(run_id) or self._get_or_create_run(
-                run_id, parent_run_id
-            )
+            root = self._get_root(run_id, parent_run_id)
+            tool_name = root.pending_tool_name
+            tool_input = root.pending_tool_input
+            output_str = str(output)[:16384]
+
             root.tools.append(
                 ToolRecord(
-                    name=root.pending_tool_name,
-                    tool_input=root.pending_tool_input,
-                    tool_output=str(output)[:16384],
+                    name=tool_name,
+                    tool_input=tool_input,
+                    tool_output=output_str,
                     timestamp=root.pending_tool_timestamp,
                 )
             )
+
+            # Classify as search
+            if tool_name in self._search_tools:
+                root.searches.append(
+                    SearchRecord(
+                        query=tool_input[:500],
+                        engine=tool_name,
+                        results_count=1 if output_str else 0,
+                        timestamp=root.pending_tool_timestamp,
+                    )
+                )
+            # Classify as file read → SourceRecord
+            if tool_name in self._file_read_tools:
+                path = self._extract_path_from_input(tool_input)
+                root.sources.append(
+                    SourceRecord(
+                        type="file",
+                        path=path,
+                        content_hash=content_hash(output_str),
+                        tool=tool_name,
+                        bytes_read=len(output_str.encode("utf-8")),
+                        timestamp=root.pending_tool_timestamp,
+                    )
+                )
+            # Classify as file write → files_modified
+            if tool_name in self._file_write_tools:
+                path = self._extract_path_from_input(tool_input)
+                if path and path not in root.files_modified:
+                    root.files_modified.append(path)
+
             root.pending_tool_name = ""
             root.pending_tool_input = ""
             root.pending_tool_timestamp = ""
@@ -349,9 +446,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
-            root = self._find_root_run(run_id) or self._get_or_create_run(
-                run_id, parent_run_id
-            )
+            root = self._get_root(run_id, parent_run_id)
             root.tools.append(
                 ToolRecord(
                     name=root.pending_tool_name,
@@ -378,13 +473,15 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
-            root = self._find_root_run(run_id) or self._get_or_create_run(
-                run_id, parent_run_id
-            )
+            root = self._get_root(run_id, parent_run_id)
             root.searches.append(
                 SearchRecord(
                     query=query,
-                    engine=serialized.get("name", "retriever"),
+                    engine=(
+                        serialized.get("name", "retriever")
+                        if serialized
+                        else "retriever"
+                    ),
                     timestamp=utc_now(),
                 )
             )
@@ -497,7 +594,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
     ) -> None:
         try:
             acc = self._get_or_create_run(run_id, parent_run_id)
-            name = serialized.get("name", "")
+            name = serialized.get("name", "") if serialized else ""
             if name and parent_run_id is not None:
                 root = self._find_root_run(run_id)
                 if root and root.scope is None:
@@ -505,6 +602,18 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
 
             if parent_run_id is None:
                 inp = inputs.get("input", inputs.get("question", ""))
+                # LangGraph uses "messages" key with message objects
+                if not inp and "messages" in inputs:
+                    msgs = inputs["messages"]
+                    if isinstance(msgs, (list, tuple)):
+                        for m in msgs:
+                            if isinstance(m, tuple) and len(m) >= 2:
+                                if m[0] == "human":
+                                    inp = m[1]
+                                    break
+                            elif hasattr(m, "type") and m.type == "human":
+                                inp = getattr(m, "content", "")
+                                break
                 if inp and not acc.task:
                     acc.task = str(inp)[:2000]
         except Exception:
@@ -525,6 +634,16 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                     acc = self._runs.get(key)
                 if acc is not None:
                     output = outputs.get("output", outputs.get("answer", ""))
+                    # LangGraph uses "messages" with AI messages
+                    if not output and "messages" in outputs:
+                        msgs = outputs["messages"]
+                        if isinstance(msgs, (list, tuple)):
+                            for m in reversed(msgs):
+                                if hasattr(m, "type") and m.type == "ai":
+                                    content = getattr(m, "content", "")
+                                    if content:
+                                        output = content
+                                        break
                     if output and not acc.decision:
                         acc.decision = str(output)[:4096]
                     self._flush_run(acc)
@@ -599,6 +718,10 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             if acc.started_at_mono
             else 0
         )
+        scope = acc.scope or self._default_scope
+        tags = list(acc.tags)
+        if "langchain" not in tags:
+            tags.append("langchain")
         return Trace(
             id=generate_trace_id(),
             timestamp=acc.started_at or utc_now(),
@@ -609,14 +732,14 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
             task=acc.task,
             decision=acc.decision,
             status=Status.ERROR if acc.has_error else Status.COMPLETED,
-            scope=acc.scope,
-            tags=acc.tags,
+            scope=scope,
+            tags=tags,
             context=acc.context,
             searches=acc.searches,
             sources_read=acc.sources,
             tools_used=acc.tools,
             files_modified=acc.files_modified,
-            turn_count=len(acc.tools),
+            turn_count=acc.turn_count or len(acc.tools),
             token_usage=acc.token_usage,
             duration_ms=duration,
             metadata=acc.metadata,

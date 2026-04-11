@@ -62,19 +62,14 @@ async def test_claude_agent_sdk_with_tools(db_path):
 
     os.environ["OPENFLUX_DB_PATH"] = db_path
 
-    sink = SQLiteSink(path=db_path)
     traces_captured = []
-
-    def capture_trace(t):
-        traces_captured.append(t)
-        sink.write(t)
 
     hooks, adapter = create_openflux_hooks(
         agent="my-claude-agent",
         scope="integration-test",
         tags=["test", "acceptance"],
         system_prompt="You are a helpful coding assistant.",
-        on_trace=capture_trace,
+        on_trace=lambda t: traces_captured.append(t),
     )
 
     # Create a temp .py file so there's something to find and read
@@ -130,6 +125,10 @@ async def test_claude_agent_sdk_with_tools(db_path):
 
     assert len(adapter.completed_traces) >= 1, "No traces captured"
 
+    # Write after record_usage so patched fields (token_usage, duration) are included
+    sink = SQLiteSink(path=db_path)
+    for t in adapter.completed_traces:
+        sink.write(t)
     sink.close()
 
     trace, coverage = check_trace(db_path, required=REQUIRED, na=NA)

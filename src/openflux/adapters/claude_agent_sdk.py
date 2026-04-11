@@ -346,6 +346,7 @@ class ClaudeAgentSDKAdapter:
         with self._lock:
             idx = self._trace_index.pop(session_id, None)
             if idx is not None and idx < len(self._completed):
+                # Patch already-emitted trace in-place (on_trace was already called)
                 trace = self._completed[idx]
                 trace.token_usage = token_usage
                 if model:
@@ -358,26 +359,43 @@ class ClaudeAgentSDKAdapter:
                     trace.turn_count = num_turns
                 if status is not None:
                     trace.status = status
-            else:
-                # Stop hook hasn't fired yet - store on accumulator
-                acc = self._get_or_create(session_id)
-                acc.token_usage = token_usage
-                if model:
-                    acc.model = model
-                if duration_ms:
-                    acc.duration_ms = duration_ms
-                if result:
-                    acc.decision = result[:4096]
-                if num_turns:
-                    acc.num_turns = num_turns
-                if status is not None:
-                    acc.status = status
                 return
+
+            # Stop hook hasn't fired yet - build trace from accumulator
+            acc = self._get_or_create(session_id)
+            acc.token_usage = token_usage
+            if model:
+                acc.model = model
+            if duration_ms:
+                acc.duration_ms = duration_ms
+            if result:
+                acc.decision = result[:4096]
+            if num_turns:
+                acc.num_turns = num_turns
+            if status is not None:
+                acc.status = status
+            self._sessions.pop(session_id, None)
+            trace = self._build_trace(acc)
+            self._completed.append(trace)
 
         if self._on_trace:
             self._on_trace(trace)
         else:
             self._write_default_sink(trace)
+
+    def finalize(self) -> None:
+        """Flush all pending sessions as traces. Call after query loop ends."""
+        with self._lock:
+            pending = list(self._sessions.values())
+            self._sessions.clear()
+        for acc in pending:
+            trace = self._build_trace(acc)
+            with self._lock:
+                self._completed.append(trace)
+            if self._on_trace:
+                self._on_trace(trace)
+            else:
+                self._write_default_sink(trace)
 
     def _build_trace(self, acc: _SessionAccumulator) -> Trace:
         metadata: dict[str, Any] = {}

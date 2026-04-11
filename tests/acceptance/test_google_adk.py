@@ -81,6 +81,7 @@ def test_google_adk_full_telemetry(tmp_path):
     traces = callbacks._adapter.flush()
     assert len(traces) >= 1
 
+    # flush() writes to default sink via OPENFLUX_DB_PATH
     from tests.acceptance.helpers import check_trace
 
     required = [

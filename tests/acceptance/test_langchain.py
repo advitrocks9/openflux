@@ -22,13 +22,16 @@ def test_langchain_gemini_full_telemetry(tmp_path):
     from langgraph.prebuilt import create_react_agent
 
     from openflux.adapters.langchain import OpenFluxCallbackHandler
+    from openflux.sinks.sqlite import SQLiteSink
 
+    sink = SQLiteSink(path=str(db_path))
     handler = OpenFluxCallbackHandler(
         agent="langchain-gemini-bot",
         search_tools={"search_web"},
         file_read_tools={"read_file"},
         file_write_tools={"write_file"},
         scope="acceptance-test",
+        on_trace=lambda t: sink.write(t),
     )
 
     @tool
