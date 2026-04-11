@@ -33,7 +33,7 @@ Both adapters write to `~/.openflux/traces.db`. That's it. Run your agents for a
 
 ## The cost analyzer
 
-Here's a standalone script. It connects to the OpenFlux SQLite database, groups token usage by model and agent, applies per-token pricing, and prints a formatted report. No OpenFlux imports needed -- it's just `sqlite3`.
+A standalone script that connects to the OpenFlux SQLite database, groups token usage by model and agent, applies per-token pricing, and prints a formatted report. No OpenFlux imports needed -- just `sqlite3`.
 
 ```python
 #!/usr/bin/env python3

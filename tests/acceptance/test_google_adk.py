@@ -23,8 +23,16 @@ def test_google_adk_full_telemetry(tmp_path):
     from google.adk.sessions import InMemorySessionService
 
     from openflux.adapters.google_adk import create_adk_callbacks
+    from openflux.sinks.sqlite import SQLiteSink
 
-    callbacks = create_adk_callbacks(agent="adk-research-bot")
+    sink = SQLiteSink(path=str(db_path))
+    traces_captured: list = []
+
+    def _on_trace(t):
+        traces_captured.append(t)
+        sink.write(t)
+
+    callbacks = create_adk_callbacks(agent="adk-research-bot", on_trace=_on_trace)
 
     def get_weather(city: str) -> dict:
         """Get current weather for a city."""
@@ -78,10 +86,11 @@ def test_google_adk_full_telemetry(tmp_path):
     )
     assert len(events) > 0
 
-    traces = callbacks._adapter.flush()
-    assert len(traces) >= 1
+    # flush() handles any unflushed sessions (on_trace writes to sink)
+    callbacks._adapter.flush()
+    assert len(traces_captured) >= 1, "No traces captured"
+    sink.close()
 
-    # flush() writes to default sink via OPENFLUX_DB_PATH
     from tests.acceptance.helpers import check_trace
 
     required = [

@@ -181,14 +181,14 @@ Tested with real API calls and simulated event streams. Coverage = percentage of
 | Adapter | Coverage | What's N/A | Install |
 |---------|----------|------------|---------|
 | MCP | 22/22 (100%) | -- | `openflux[mcp]` |
-| Amazon Bedrock | 21/22 (100%) | files_modified (cloud agents) | `openflux[bedrock]` |
+| Amazon Bedrock | 21/22 (100%) | files_modified | `openflux[bedrock]` |
+| OpenAI Agents SDK | 21/21 (100%) | correction | `openflux[openai]` |
 | Claude Code | 21/22 (95%) | parent_id | `(stdlib)` |
-| LangChain | 20/22 (91%) | correction, files_modified | `openflux[langchain]` |
-| Claude Agent SDK | 20/22 (91%) | parent_id, correction | `openflux[claude-agent-sdk]` |
-| Google ADK | 16/22 (73%) | parent_id, task, decision, correction, sources_read, files_modified | `openflux[google-adk]` |
-| OpenAI Agents SDK | Working | Untested (API quota) | `openflux[openai]` |
-| AutoGen v0.4 | Working | Untested (API quota) | `openflux[autogen]` |
-| CrewAI | Working | Untested (API quota) | `openflux[crewai]` |
+| LangChain | 20/20 (100%) | correction, parent_id | `openflux[langchain]` |
+| Claude Agent SDK | 19/19 (100%) | parent_id, correction, files_modified | `openflux[claude-agent-sdk]` |
+| Google ADK | 18/18 (100%) | parent_id, correction, files_modified, searches | `openflux[google-adk]` |
+| AutoGen v0.4 | 16/16 (100%) | parent_id, correction, searches, sources_read, tools_used, files_modified | `openflux[autogen]` |
+| CrewAI | 17/18 (94%) | parent_id, correction, files_modified, token_usage | `openflux[crewai]` |
 
 ## Configuration
 
@@ -229,7 +229,7 @@ Full schema definition in [docs/schema.md](docs/schema.md).
 - [ ] Cost alerting (threshold-based notifications)
 - [ ] OTLP sink integration tests
 - [ ] Grafana dashboard template
-- [ ] OpenAI / AutoGen / CrewAI real API coverage tests
+- [x] ~~OpenAI / AutoGen / CrewAI real API coverage tests~~ (done in v0.3.0)
 - [ ] Webhook sink (POST traces to any URL)
 - [ ] Trace retention policies (auto-prune by age/size)
 - [ ] Multi-user auth for served dashboard

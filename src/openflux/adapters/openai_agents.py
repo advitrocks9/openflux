@@ -334,9 +334,7 @@ class OpenFluxProcessor(TracingProcessor):
         # Token usage from ResponseUsage object
         usage = getattr(response, "usage", None)
         if usage is not None:
-            acc.token_usage.input_tokens += int(
-                getattr(usage, "input_tokens", 0) or 0
-            )
+            acc.token_usage.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
             acc.token_usage.output_tokens += int(
                 getattr(usage, "output_tokens", 0) or 0
             )

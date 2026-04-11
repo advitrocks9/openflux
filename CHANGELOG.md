@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0 (2026-04-11)
+
+### Breaking
+- Google ADK adapter callbacks now use keyword arguments (matching ADK API change)
+
+### Bug fixes
+- Fix OpenAI Agents adapter: SDK renamed `GenerationSpanData` to `ResponseSpanData`, breaking model/task/decision/context/token capture
+- Fix LangChain adapter: `serialized` parameter is now `None` in LangGraph, crashing `on_chain_start` and 4 other callbacks
+- Fix LangChain adapter: task/decision not captured from LangGraph's `messages` input format
+- Fix LangChain adapter: tool classification (search, source, write) never triggered — tools went to generic list only
+- Fix LangChain adapter: token usage not captured from Google providers (`usage_metadata` on message objects)
+- Fix LangChain adapter: context records never reached root accumulator due to run traversal ordering
+- Fix Google ADK adapter: system instructions moved to `config.system_instruction`, model attribute renamed to `model_version`
+- Fix Google ADK adapter: task, decision, source records, and metadata never captured
+- Fix CrewAI adapter: system prompts from `event.messages` not captured as context records
+- Fix CrewAI test: SQLite cross-thread error when event bus fires `on_trace` from worker thread
+- Fix Claude Agent SDK adapter: `record_usage()` stored data on accumulator but never built the trace when Stop hook didn't fire
+- Fix Claude Agent SDK adapter: double-write when patching already-emitted traces via `record_usage()`
+
+### Improvements
+- All 9 adapters now tested with real API calls (OpenAI, Google Gemini, Anthropic Claude)
+- OpenAI Agents adapter: 21/21 fields (100% coverage)
+- LangChain adapter: 20/20 fields (100% coverage)
+- Google ADK adapter: 18/18 fields (100% coverage, up from 73%)
+- CrewAI adapter: 17/18 fields (94% coverage)
+- Claude Agent SDK adapter: 19/19 fields (100% coverage)
+- AutoGen adapter: 16/16 fields (100% coverage)
+- Standardized all acceptance test imports to absolute paths
+- Added `finalize()` method to Claude Agent SDK adapter
+- Added `_DEFAULT_FILE_READ_TOOLS` and `_DEFAULT_FILE_WRITE_TOOLS` to LangChain adapter
+
 ## 0.2.0 (2026-03-30)
 
 ### Features

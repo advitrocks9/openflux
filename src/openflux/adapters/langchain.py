@@ -175,9 +175,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         try:
             root = self._get_root(run_id, parent_run_id)
             model = (
-                serialized.get("kwargs", {}).get("model_name", "")
-                if serialized
-                else ""
+                serialized.get("kwargs", {}).get("model_name", "") if serialized else ""
             )
             if model:
                 root.model = model
@@ -196,9 +194,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
         try:
             root = self._get_root(run_id, parent_run_id)
             model = (
-                serialized.get("kwargs", {}).get("model_name", "")
-                if serialized
-                else ""
+                serialized.get("kwargs", {}).get("model_name", "") if serialized else ""
             )
             if model:
                 root.model = model
@@ -329,9 +325,7 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                         )
 
     @staticmethod
-    def _extract_usage_from_generations(
-        response: Any, root: _RunAccumulator
-    ) -> None:
+    def _extract_usage_from_generations(response: Any, root: _RunAccumulator) -> None:
         """Extract token usage from message.usage_metadata (Google etc.)."""
         for gen_list in getattr(response, "generations", []):
             for gen in gen_list:
@@ -340,12 +334,8 @@ class OpenFluxCallbackHandler(BaseCallbackHandler):
                     continue
                 usage = getattr(msg, "usage_metadata", None)
                 if usage and isinstance(usage, dict):
-                    root.token_usage.input_tokens += int(
-                        usage.get("input_tokens", 0)
-                    )
-                    root.token_usage.output_tokens += int(
-                        usage.get("output_tokens", 0)
-                    )
+                    root.token_usage.input_tokens += int(usage.get("input_tokens", 0))
+                    root.token_usage.output_tokens += int(usage.get("output_tokens", 0))
                     return
 
     @staticmethod
