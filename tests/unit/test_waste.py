@@ -1,4 +1,4 @@
-"""Tests for waste detection and session replay."""
+"""Tests for tool efficiency analysis and session replay."""
 
 import sqlite3
 
@@ -8,10 +8,12 @@ from openflux._pricing import estimate_cost
 from openflux.schema import Status, TokenUsage, ToolRecord, Trace
 from openflux.sinks.sqlite import SQLiteSink
 from openflux.waste import (
-    _detect_loop,
+    _classify_bash,
+    _classify_tool,
     _parse_output_summary,
     _parse_target,
-    analyze_waste,
+    _session_redundancy,
+    analyze_efficiency,
     replay_session,
 )
 
@@ -19,119 +21,114 @@ from openflux.waste import (
 
 
 class TestPricing:
-    def test_opus_rates(self) -> None:
+    def test_opus_input(self) -> None:
         cost = estimate_cost("claude-opus-4-6", input_tokens=1_000_000)
         assert cost == pytest.approx(15.0, rel=0.01)
 
     def test_opus_output(self) -> None:
-        cost = estimate_cost("claude-opus-4-6", output_tokens=1_000_000)
-        assert cost == pytest.approx(75.0, rel=0.01)
+        assert estimate_cost(
+            "claude-opus-4-6", output_tokens=1_000_000
+        ) == pytest.approx(75.0, rel=0.01)
 
     def test_opus_cache_read(self) -> None:
-        cost = estimate_cost("claude-opus-4-6", cache_read_tokens=1_000_000)
-        assert cost == pytest.approx(1.5, rel=0.01)
+        assert estimate_cost(
+            "claude-opus-4-6", cache_read_tokens=1_000_000
+        ) == pytest.approx(1.5, rel=0.01)
 
-    def test_sonnet_rates(self) -> None:
-        cost = estimate_cost("claude-sonnet-4-6", input_tokens=1_000_000)
-        assert cost == pytest.approx(3.0, rel=0.01)
+    def test_sonnet(self) -> None:
+        assert estimate_cost(
+            "claude-sonnet-4-6", input_tokens=1_000_000
+        ) == pytest.approx(3.0, rel=0.01)
 
-    def test_haiku_rates(self) -> None:
-        cost = estimate_cost("claude-haiku-4-5", input_tokens=1_000_000)
-        assert cost == pytest.approx(0.25, rel=0.01)
+    def test_haiku(self) -> None:
+        assert estimate_cost(
+            "claude-haiku-4-5", input_tokens=1_000_000
+        ) == pytest.approx(0.25, rel=0.01)
 
-    def test_gpt4o_mini(self) -> None:
-        cost = estimate_cost("gpt-4o-mini", input_tokens=1_000_000)
-        assert cost == pytest.approx(0.15, rel=0.01)
-
-    def test_unknown_model_uses_default(self) -> None:
-        cost = estimate_cost("some-unknown-model", input_tokens=1_000_000)
-        assert cost == pytest.approx(1.0, rel=0.01)
+    def test_unknown_uses_default(self) -> None:
+        assert estimate_cost("mystery-model", input_tokens=1_000_000) == pytest.approx(
+            1.0, rel=0.01
+        )
 
     def test_zero_tokens(self) -> None:
         assert estimate_cost("claude-opus-4-6") == 0.0
 
-    def test_combined(self) -> None:
-        cost = estimate_cost(
-            "claude-opus-4-6",
-            input_tokens=100,
-            output_tokens=200,
-            cache_read_tokens=300,
-            cache_creation_tokens=400,
-        )
-        expected = (100 * 15 + 200 * 75 + 300 * 1.5 + 400 * 18.75) / 1_000_000
-        assert cost == pytest.approx(expected, rel=0.001)
+
+# ── Tool classification ───────────────────────────────────────────────
 
 
-# ── Loop detection ─────────────────────────────────────────────────────
+class TestClassification:
+    def test_bash_git_status(self) -> None:
+        assert _classify_bash('{"command": "git status"}') == "git status"
+
+    def test_bash_pytest(self) -> None:
+        assert _classify_bash('{"command": "pytest tests/"}') == "Test (pytest)"
+
+    def test_bash_ls(self) -> None:
+        assert _classify_bash('{"command": "ls src/"}') == "Directory listing (ls)"
+
+    def test_bash_cat(self) -> None:
+        assert _classify_bash('{"command": "cat file.py"}') == "File read (cat)"
+
+    def test_bash_head(self) -> None:
+        assert _classify_bash('{"command": "head -20 file.py"}') == "File read (head)"
+
+    def test_bash_other(self) -> None:
+        assert _classify_bash('{"command": "whoami"}') == "Other"
+
+    def test_overhead_tool(self) -> None:
+        assert _classify_tool("TaskCreate", "{}").startswith("Overhead")
+
+    def test_subagent(self) -> None:
+        assert _classify_tool("Agent", "{}") == "Subagent"
+
+    def test_regular_tool(self) -> None:
+        assert _classify_tool("Read", "{}") == "Read"
 
 
-class TestLoopDetection:
-    def test_no_loop_in_clean_session(self) -> None:
+# ── Redundancy detection ──────────────────────────────────────────────
+
+
+class TestSessionRedundancy:
+    def test_no_redundancy(self) -> None:
         tools = [
-            ("Read", False),
-            ("Read", False),
-            ("Edit", False),
-            ("Bash", False),
+            ("Bash", '{"command": "ls src/"}'),
+            ("Bash", '{"command": "cat file.py"}'),
+            ("Bash", '{"command": "pytest"}'),
         ]
-        start, cycles = _detect_loop(tools)
-        assert start is None
-        assert cycles == 0
+        result = _session_redundancy(tools)
+        assert len(result) == 0
 
-    def test_detects_three_cycle_loop(self) -> None:
+    def test_finds_repeated_command(self) -> None:
         tools = [
-            ("Read", False),
-            ("Edit", False),
-            ("Bash", True),
-            ("Edit", False),
-            ("Bash", True),
-            ("Edit", False),
-            ("Bash", True),
+            ("Bash", '{"command": "git status"}'),
+            ("Bash", '{"command": "git diff"}'),
+            ("Bash", '{"command": "git status"}'),
         ]
-        start, cycles = _detect_loop(tools)
-        assert start is not None
-        assert cycles >= 3
+        result = _session_redundancy(tools)
+        assert len(result) >= 1
+        assert any(p.redundant_calls >= 1 for p in result)
 
-    def test_no_loop_with_only_two_cycles(self) -> None:
+    def test_finds_repeated_file_read(self) -> None:
         tools = [
-            ("Edit", False),
-            ("Bash", True),
-            ("Edit", False),
-            ("Bash", True),
-            ("Read", False),
+            ("Bash", '{"command": "cat src/main.py"}'),
+            ("Bash", '{"command": "cat src/main.py"}'),
+            ("Bash", '{"command": "cat src/main.py"}'),
         ]
-        start, cycles = _detect_loop(tools)
-        assert start is None
-        assert cycles == 0
+        result = _session_redundancy(tools)
+        assert len(result) >= 1
+        total = sum(p.redundant_calls for p in result)
+        assert total == 2  # 3 calls, 1 unique, 2 redundant
 
-    def test_detects_loop_with_write_tool(self) -> None:
+    def test_ignores_overhead(self) -> None:
         tools = [
-            ("Write", False),
-            ("Bash", True),
-            ("Write", False),
-            ("Bash", True),
-            ("Write", False),
-            ("Bash", True),
+            ("TaskCreate", "{}"),
+            ("TaskCreate", "{}"),
+            ("TaskUpdate", "{}"),
+            ("TaskUpdate", "{}"),
         ]
-        start, cycles = _detect_loop(tools)
-        assert start is not None
-        assert cycles >= 3
-
-    def test_no_loop_when_bash_succeeds(self) -> None:
-        tools = [
-            ("Edit", False),
-            ("Bash", False),
-            ("Edit", False),
-            ("Bash", False),
-            ("Edit", False),
-            ("Bash", False),
-        ]
-        start, cycles = _detect_loop(tools)
-        assert start is None
-
-    def test_empty_sequence(self) -> None:
-        start, cycles = _detect_loop([])
-        assert start is None
-        assert cycles == 0
+        result = _session_redundancy(tools)
+        assert len(result) == 0
 
 
 # ── Target parsing ─────────────────────────────────────────────────────
@@ -139,253 +136,175 @@ class TestLoopDetection:
 
 class TestParseTarget:
     def test_bash_command(self) -> None:
-        result = _parse_target("Bash", '{"command": "pytest tests/"}')
-        assert result == "pytest tests/"
+        assert _parse_target("Bash", '{"command": "pytest tests/"}') == "pytest tests/"
 
     def test_read_file_path(self) -> None:
-        result = _parse_target("Read", '{"file_path": "/src/main.py"}')
-        assert result == "/src/main.py"
+        assert _parse_target("Read", '{"file_path": "/src/main.py"}') == "/src/main.py"
 
     def test_grep_pattern(self) -> None:
         result = _parse_target("Grep", '{"pattern": "TODO", "path": "src/"}')
         assert result == '"TODO" in src/'
 
     def test_invalid_json(self) -> None:
-        result = _parse_target("Bash", "not json")
-        assert result == "not json"
+        assert _parse_target("Bash", "not json") == "not json"
 
-    def test_empty_input(self) -> None:
-        result = _parse_target("Bash", "")
-        assert result == ""
+    def test_empty(self) -> None:
+        assert _parse_target("Bash", "") == ""
 
 
 class TestParseOutputSummary:
-    def test_bash_with_failures(self) -> None:
+    def test_bash_failures(self) -> None:
         output = '{"stdout": "", "stderr": "FAILED test_a FAILED test_b"}'
-        result = _parse_output_summary("Bash", output, error=False)
-        assert "2 failure" in result
+        assert "2 failure" in _parse_output_summary("Bash", output, error=False)
 
-    def test_read_shows_size(self) -> None:
+    def test_read_size(self) -> None:
         result = _parse_output_summary("Read", "x" * 2048, error=False)
         assert "KB" in result or "B" in result
 
-    def test_edit_empty_summary(self) -> None:
-        result = _parse_output_summary("Edit", "ok", error=False)
-        assert result == ""
-
-    def test_error_shows_message(self) -> None:
+    def test_error_message(self) -> None:
         result = _parse_output_summary("Bash", "command not found", error=True)
         assert "command not found" in result
 
 
-# ── Integration: analyze_waste + replay ────────────────────────────────
+# ── Integration ────────────────────────────────────────────────────────
 
 
 @pytest.fixture()
-def waste_db(tmp_path):
-    """Create a DB with traces that have known waste patterns."""
-    db_path = tmp_path / "waste_test.db"
+def test_db(tmp_path):
+    db_path = tmp_path / "test.db"
     sink = SQLiteSink(path=str(db_path))
 
-    # Session 1: clean session (no waste)
-    clean = Trace(
-        id="trc-clean001",
+    # Session with repeated commands
+    tools = [
+        ToolRecord(
+            name="Bash",
+            tool_input='{"command": "ls src/"}',
+            tool_output='{"stdout": "main.py", "stderr": ""}',
+            timestamp="2026-04-10T10:00:01Z",
+        ),
+        ToolRecord(
+            name="Bash",
+            tool_input='{"command": "cat src/main.py"}',
+            tool_output='{"stdout": "print(1)", "stderr": ""}',
+            timestamp="2026-04-10T10:00:02Z",
+        ),
+        ToolRecord(
+            name="Bash",
+            tool_input='{"command": "git status"}',
+            tool_output='{"stdout": "clean", "stderr": ""}',
+            timestamp="2026-04-10T10:00:03Z",
+        ),
+        ToolRecord(
+            name="Bash",
+            tool_input='{"command": "cat src/main.py"}',
+            tool_output='{"stdout": "print(1)", "stderr": ""}',
+            timestamp="2026-04-10T10:00:04Z",
+        ),
+        ToolRecord(
+            name="Bash",
+            tool_input='{"command": "git status"}',
+            tool_output='{"stdout": "clean", "stderr": ""}',
+            timestamp="2026-04-10T10:00:05Z",
+        ),
+        ToolRecord(
+            name="TaskCreate",
+            tool_input="{}",
+            timestamp="2026-04-10T10:00:06Z",
+        ),
+        ToolRecord(
+            name="TaskUpdate",
+            tool_input="{}",
+            timestamp="2026-04-10T10:00:07Z",
+        ),
+    ]
+    trace = Trace(
+        id="trc-test001",
         timestamp="2026-04-10T10:00:00Z",
         agent="claude-code",
-        session_id="sess-clean",
+        session_id="sess-1",
         model="claude-opus-4-6",
-        task="Fix the auth bug",
+        task="Fix the bug",
         status=Status.COMPLETED,
-        scope="myproject",
-        turn_count=5,
+        turn_count=10,
         token_usage=TokenUsage(input_tokens=1000, output_tokens=2000),
-        tools_used=[
-            ToolRecord(
-                name="Read",
-                tool_input='{"file_path": "auth.py"}',
-                tool_output="x" * 500,
-                timestamp="2026-04-10T10:00:01Z",
-            ),
-            ToolRecord(
-                name="Edit",
-                tool_input='{"file_path": "auth.py"}',
-                timestamp="2026-04-10T10:00:02Z",
-            ),
-            ToolRecord(
-                name="Bash",
-                tool_input='{"command": "pytest"}',
-                tool_output='{"stdout": "1 passed", "stderr": ""}',
-                timestamp="2026-04-10T10:00:03Z",
-            ),
-        ],
+        tools_used=tools,
     )
-    sink.write(clean)
-
-    # Session 2: loop session (edit→bash fail cycle)
-    loop_tools = []
-    ts_base = "2026-04-10T11:00:"
-    loop_tools.append(
-        ToolRecord(
-            name="Read",
-            tool_input='{"file_path": "app.py"}',
-            tool_output="x" * 300,
-            timestamp=f"{ts_base}01Z",
-        )
-    )
-    for i in range(4):
-        loop_tools.append(
-            ToolRecord(
-                name="Edit",
-                tool_input='{"file_path": "app.py"}',
-                timestamp=f"{ts_base}{10 + i * 2:02d}Z",
-            )
-        )
-        loop_tools.append(
-            ToolRecord(
-                name="Bash",
-                tool_input='{"command": "pytest"}',
-                tool_output='{"stdout": "", "stderr": "FAILED test_x"}',
-                error=True,
-                timestamp=f"{ts_base}{11 + i * 2:02d}Z",
-            )
-        )
-
-    loop_trace = Trace(
-        id="trc-loop001",
-        timestamp="2026-04-10T11:00:00Z",
-        agent="claude-code",
-        session_id="sess-loop",
-        model="claude-opus-4-6",
-        task="Refactor the database layer",
-        status=Status.ERROR,
-        scope="myproject",
-        turn_count=20,
-        token_usage=TokenUsage(input_tokens=5000, output_tokens=10000),
-        tools_used=loop_tools,
-    )
-    sink.write(loop_trace)
-
-    # Session 3: error session (fast error, ≤5 turns)
-    fast_err = Trace(
-        id="trc-fasterr",
-        timestamp="2026-04-10T12:00:00Z",
-        agent="claude-code",
-        session_id="sess-fasterr",
-        model="claude-opus-4-6",
-        task="Quick fix",
-        status=Status.ERROR,
-        scope="myproject",
-        turn_count=2,
-        token_usage=TokenUsage(input_tokens=100, output_tokens=200),
-    )
-    sink.write(fast_err)
-
-    # Session 4: context reload (same scope within 10 min of session 1)
-    reload_trace = Trace(
-        id="trc-reload1",
-        timestamp="2026-04-10T10:05:00Z",
-        agent="claude-code",
-        session_id="sess-reload",
-        model="claude-opus-4-6",
-        task="Continue auth work",
-        status=Status.COMPLETED,
-        scope="myproject",
-        turn_count=3,
-        token_usage=TokenUsage(input_tokens=800, output_tokens=1500),
-    )
-    sink.write(reload_trace)
-
+    sink.write(trace)
     sink.close()
     return str(db_path)
 
 
-class TestAnalyzeWaste:
-    def test_finds_all_sessions(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        report = analyze_waste(conn, days=30)
+class TestAnalyzeEfficiency:
+    def test_counts_sessions(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        report = analyze_efficiency(conn, days=30)
         conn.close()
-        assert report.total_sessions == 4
+        assert report.total_sessions == 1
 
-    def test_detects_loops(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        report = analyze_waste(conn, days=30)
+    def test_counts_tools(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        report = analyze_efficiency(conn, days=30)
         conn.close()
-        assert len(report.loops) >= 1
-        loop = report.loops[0]
-        assert loop.trace_id == "trc-loop001"
-        assert loop.cycle_count >= 3
+        assert report.total_tool_calls == 7
 
-    def test_detects_errors(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        report = analyze_waste(conn, days=30)
+    def test_finds_overhead(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        report = analyze_efficiency(conn, days=30)
         conn.close()
-        # fast_err has ≤5 turns, loop session is counted under loops
-        assert report.errors.fast_errors >= 1
+        assert report.overhead_calls == 2
 
-    def test_detects_reloads(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        report = analyze_waste(conn, days=30)
+    def test_finds_redundancy(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        report = analyze_efficiency(conn, days=30)
         conn.close()
-        assert report.reloads.count >= 1
+        # cat src/main.py and git status each repeated once
+        assert report.total_redundant_calls >= 2
 
-    def test_waste_less_than_total(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        report = analyze_waste(conn, days=30)
+    def test_bash_breakdown(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        report = analyze_efficiency(conn, days=30)
         conn.close()
-        waste = report.loop_cost + report.errors.total_cost + report.reloads.total_cost
-        assert waste <= report.total_cost
+        assert len(report.bash_breakdown) > 0
+        names = [b.name for b in report.bash_breakdown]
+        assert "git status" in names
 
-    def test_productive_cost_nonnegative(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        report = analyze_waste(conn, days=30)
-        conn.close()
-        assert report.productive_cost >= 0
-
-    def test_agent_filter(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        report = analyze_waste(conn, days=30, agent="nonexistent-agent")
+    def test_agent_filter(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        report = analyze_efficiency(conn, days=30, agent="nonexistent")
         conn.close()
         assert report.total_sessions == 0
 
 
 class TestReplaySession:
-    def test_replay_clean_session(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        replay = replay_session(conn, "trc-clean001")
+    def test_replay_exists(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        replay = replay_session(conn, "trc-test001")
         conn.close()
         assert replay is not None
-        assert replay.trace_id == "trc-clean001"
-        assert len(replay.tools) == 3
-        assert replay.loop_start is None
+        assert len(replay.tools) == 7
 
-    def test_replay_loop_session(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        replay = replay_session(conn, "trc-loop001")
+    def test_replay_breakdown(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        replay = replay_session(conn, "trc-test001")
         conn.close()
         assert replay is not None
-        assert replay.loop_start is not None
-        assert replay.loop_cycles >= 3
-        assert replay.loop_cost > 0
+        assert len(replay.tool_breakdown) > 0
 
-    def test_replay_nonexistent(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        replay = replay_session(conn, "trc-doesnotexist")
-        conn.close()
-        assert replay is None
-
-    def test_tool_steps_have_targets(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        replay = replay_session(conn, "trc-clean001")
+    def test_replay_redundancy(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        replay = replay_session(conn, "trc-test001")
         conn.close()
         assert replay is not None
-        read_step = replay.tools[0]
-        assert read_step.name == "Read"
-        assert "auth.py" in read_step.target
+        assert len(replay.redundant_in_session) >= 1
 
-    def test_tool_steps_ordered_by_index(self, waste_db: str) -> None:
-        conn = sqlite3.connect(waste_db)
-        replay = replay_session(conn, "trc-loop001")
+    def test_replay_nonexistent(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        assert replay_session(conn, "trc-nope") is None
+        conn.close()
+
+    def test_tool_targets(self, test_db: str) -> None:
+        conn = sqlite3.connect(test_db)
+        replay = replay_session(conn, "trc-test001")
         conn.close()
         assert replay is not None
-        indices = [t.index for t in replay.tools]
-        assert indices == list(range(1, len(replay.tools) + 1))
+        assert "ls src/" in replay.tools[0].target

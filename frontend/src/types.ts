@@ -90,3 +90,65 @@ export interface TraceStats {
   source_count: number;
   files_modified_count: number;
 }
+
+// Waste detection types
+
+export interface LoopSession {
+  trace_id: string;
+  task: string;
+  cost: number;
+  loop_start_index: number;
+  total_tools: number;
+  cycle_count: number;
+  productive_cost: number;
+  loop_cost: number;
+}
+
+export interface ErrorSummary {
+  total_cost: number;
+  total_count: number;
+  fast_errors: number;
+  fast_error_cost: number;
+  slow_errors: number;
+  slow_error_cost: number;
+}
+
+export interface ReloadSummary {
+  total_cost: number;
+  count: number;
+}
+
+export interface WasteReport {
+  total_sessions: number;
+  total_cost: number;
+  productive_cost: number;
+  loops: LoopSession[];
+  loop_cost: number;
+  errors: ErrorSummary;
+  reloads: ReloadSummary;
+}
+
+export interface ToolStep {
+  index: number;
+  name: string;
+  target: string;
+  error: boolean;
+  output_summary: string;
+  timestamp: string;
+}
+
+export interface SessionReplay {
+  trace_id: string;
+  task: string;
+  status: string;
+  model: string;
+  turn_count: number;
+  duration_ms: number;
+  total_cost: number;
+  tools: ToolStep[];
+  loop_start: number | null;
+  loop_cycles: number;
+  productive_cost: number;
+  loop_cost: number;
+  scope: string;
+}

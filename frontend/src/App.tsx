@@ -5,16 +5,20 @@ import { TraceTable } from "./components/TraceTable";
 import { TraceDetail } from "./components/TraceDetail";
 import { FilterBar } from "./components/FilterBar";
 import { StatsView } from "./components/StatsView";
+import { WasteView } from "./components/WasteView";
 import { CommandPalette } from "./components/CommandPalette";
 import { useTraces } from "./hooks/useTraces";
 import { useTrace } from "./hooks/useTrace";
 import { useStats } from "./hooks/useStats";
 import { useKeyboard } from "./hooks/useKeyboard";
 
-type View = "traces" | "stats";
+type View = "traces" | "stats" | "waste";
 
 function getViewFromHash(): View {
-  return window.location.hash === "#stats" ? "stats" : "traces";
+  const h = window.location.hash;
+  if (h === "#stats") return "stats";
+  if (h === "#waste") return "waste";
+  return "traces";
 }
 
 const PAGE_SIZE = 50;
@@ -65,7 +69,7 @@ export function App() {
   }, []);
 
   const handleViewChange = useCallback((v: View) => {
-    window.location.hash = v === "stats" ? "#stats" : "#traces";
+    window.location.hash = v === "traces" ? "#traces" : `#${v}`;
     setView(v);
     setSelectedTraceId(null);
   }, []);
@@ -153,7 +157,7 @@ export function App() {
               )}
             </AnimatePresence>
           </div>
-        ) : (
+        ) : view === "stats" ? (
           <div className="overflow-auto h-full">
             <StatsView
               stats={stats}
@@ -161,6 +165,8 @@ export function App() {
               loading={statsLoading}
             />
           </div>
+        ) : (
+          <WasteView />
         )}
       </Layout>
       <CommandPalette

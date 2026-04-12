@@ -4,6 +4,8 @@ import type {
   StatsResponse,
   TimelineResponse,
   TraceStats,
+  WasteReport,
+  SessionReplay,
 } from "./types";
 
 const BASE = "/api";
@@ -48,4 +50,15 @@ export function fetchTimeline(days = 30): Promise<TimelineResponse> {
 
 export function fetchTraceStats(id: string): Promise<TraceStats> {
   return get<TraceStats>(`/traces/${id}/stats`);
+}
+
+export function fetchWaste(days = 30, agent?: string): Promise<WasteReport> {
+  const qs = new URLSearchParams();
+  qs.set("days", String(days));
+  if (agent) qs.set("agent", agent);
+  return get<WasteReport>(`/waste?${qs.toString()}`);
+}
+
+export function fetchReplay(id: string): Promise<SessionReplay> {
+  return get<SessionReplay>(`/replay/${id}`);
 }

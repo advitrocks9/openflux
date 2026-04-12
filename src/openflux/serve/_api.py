@@ -284,11 +284,11 @@ def _handle_waste(
 ) -> tuple[int, dict[str, Any]]:
     from dataclasses import asdict
 
-    from openflux.waste import analyze_waste
+    from openflux.waste import analyze_efficiency
 
     days = min(_qs_int(qs, "days", 30), 365)
     agent = _qs_str(qs, "agent")
-    report = analyze_waste(sink.conn, days=days, agent=agent or None)
+    report = analyze_efficiency(sink.conn, days=days, agent=agent or None)
     return 200, asdict(report)
 
 
