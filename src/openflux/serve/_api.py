@@ -38,6 +38,11 @@ def handle_request(path: str, sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
         return _handle_stats(sink)
     if clean_path == "/api/stats/timeline":
         return _handle_timeline(qs, sink)
+    if clean_path == "/api/waste":
+        return _handle_waste(qs, sink)
+    if clean_path.startswith("/api/replay/"):
+        trace_id = clean_path[len("/api/replay/") :]
+        return _handle_replay(trace_id, sink)
     if clean_path.startswith("/api/traces/"):
         trace_id = clean_path[len("/api/traces/") :]
         return _handle_trace_detail(trace_id, sink)
@@ -272,3 +277,27 @@ def _handle_timeline(
             for r in rows
         ],
     }
+
+
+def _handle_waste(
+    qs: dict[str, list[str]], sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    from dataclasses import asdict
+
+    from openflux.waste import analyze_waste
+
+    days = min(_qs_int(qs, "days", 30), 365)
+    agent = _qs_str(qs, "agent")
+    report = analyze_waste(sink.conn, days=days, agent=agent or None)
+    return 200, asdict(report)
+
+
+def _handle_replay(trace_id: str, sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
+    from dataclasses import asdict
+
+    from openflux.waste import replay_session
+
+    replay = replay_session(sink.conn, trace_id)
+    if replay is None:
+        return 404, {"error": f"Trace '{trace_id}' not found"}
+    return 200, asdict(replay)

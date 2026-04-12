@@ -445,13 +445,21 @@ class SQLiteSink(Sink):
     ) -> list[dict[str, Any]]:
         where, params = self._build_filter(days, agent)
         rows = self._conn.execute(
-            "SELECT model, SUM(token_input), SUM(token_output) "
+            "SELECT model, SUM(token_input), SUM(token_output), "
+            "SUM(token_cache_read), SUM(token_cache_creation) "
             f"FROM traces WHERE {where} "
             "GROUP BY model ORDER BY SUM(token_input) + SUM(token_output) DESC",
             params,
         ).fetchall()
         return [
-            {"model": r[0] or "(unknown)", "input": r[1], "output": r[2]} for r in rows
+            {
+                "model": r[0] or "(unknown)",
+                "input": r[1],
+                "output": r[2],
+                "cache_read": r[3] or 0,
+                "cache_creation": r[4] or 0,
+            }
+            for r in rows
         ]
 
     def token_by_agent(

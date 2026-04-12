@@ -10,18 +10,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from openflux._pricing import estimate_cost as _estimate_cost_full
 from openflux.sinks.sqlite import SQLiteSink
+from openflux.waste import SessionReplay, WasteReport
 
 DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
-
-# Per-million-token pricing: (input_rate, output_rate)
-_MODEL_RATES: list[tuple[str, float, float]] = [
-    ("gpt-4o-mini", 0.15, 0.60),
-    ("gpt-4o", 2.50, 10.00),
-    ("claude-", 3.00, 15.00),
-    ("gemini", 0.075, 0.30),
-]
-_DEFAULT_RATE = (1.00, 3.00)
 
 
 def _hook_cmd(subcommand: str) -> str:
@@ -129,14 +122,16 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate USD cost from model name and token counts."""
-    model_lower = model.lower()
-    for prefix, in_rate, out_rate in _MODEL_RATES:
-        if prefix in model_lower:
-            return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
-    in_rate, out_rate = _DEFAULT_RATE
-    return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
+def _estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int = 0,
+    cache_creation: int = 0,
+) -> float:
+    return _estimate_cost_full(
+        model, input_tokens, output_tokens, cache_read, cache_creation
+    )
 
 
 def _bar(value: int, max_value: int, width: int = 12) -> str:
@@ -368,10 +363,13 @@ def _print_status_tokens(conn: sqlite3.Connection) -> None:
 
     # Estimate cost across all models
     model_rows = conn.execute(
-        "SELECT model, SUM(token_input), SUM(token_output) FROM traces GROUP BY model"
+        "SELECT model, SUM(token_input), SUM(token_output), "
+        "SUM(token_cache_read), SUM(token_cache_creation) "
+        "FROM traces GROUP BY model"
     ).fetchall()
     total_cost = sum(
-        _estimate_cost(m or "", ti or 0, to or 0) for m, ti, to in model_rows
+        _estimate_cost(m or "", ti or 0, to or 0, cr or 0, cc or 0)
+        for m, ti, to, cr, cc in model_rows
     )
 
     print("\nToken usage (all time):")
@@ -421,7 +419,13 @@ def _print_cost_by_model(by_model: list[dict[str, Any]]) -> None:
     print("\nBy model:")
     for row in by_model:
         total = row["input"] + row["output"]
-        cost = _estimate_cost(row["model"], row["input"], row["output"])
+        cost = _estimate_cost(
+            row["model"],
+            row["input"],
+            row["output"],
+            row.get("cache_read", 0),
+            row.get("cache_creation", 0),
+        )
         print(f"  {row['model']:30s} {total:>12,} tokens  ${cost:,.2f}")
 
 
@@ -623,6 +627,219 @@ def cmd_serve(args: argparse.Namespace) -> None:
     serve(port=args.port, db_path=db)
 
 
+# ── waste ──────────────────────────────────────────────────────────────
+
+
+def cmd_waste(args: argparse.Namespace) -> None:
+    from openflux.waste import analyze_waste
+
+    sink = _get_sink()
+    try:
+        report = analyze_waste(sink.conn, days=args.days, agent=args.agent)
+    finally:
+        sink.close()
+
+    _print_waste_report(report, args.days)
+
+
+def _print_waste_report(report: WasteReport, days: int) -> None:
+    r = report
+    waste = r.loop_cost + r.errors.total_cost + r.reloads.total_cost
+    waste_pct = waste / r.total_cost * 100 if r.total_cost > 0 else 0
+    prod_pct = 100 - waste_pct
+
+    print(f"Waste Analysis \u2014 last {days} days")
+    print("\u2550" * 45)
+    print()
+    print(f"  Total spend:     ${r.total_cost:>8,.2f}    {r.total_sessions} sessions")
+    print(f"  Productive:      ${r.productive_cost:>8,.2f}    ({prod_pct:.0f}%)")
+    print(f"  Waste detected:  ${waste:>8,.2f}    ({waste_pct:.0f}%)")
+
+    # Loops
+    if r.loops:
+        print()
+        loop_pct = r.loop_cost / r.total_cost * 100 if r.total_cost > 0 else 0
+        print(
+            f"  Agent loops         ${r.loop_cost:>8,.2f}"
+            f"    {len(r.loops)} sessions    {loop_pct:.0f}%"
+        )
+        print("  " + "\u2500" * 43)
+        print("  Edit\u2192test cycles that never converged.")
+        worst = r.loops[0]
+        print(
+            f"  Worst: {worst.trace_id} \u2014 ${worst.cost:.2f}"
+            f" ({worst.cycle_count} cycles)"
+        )
+
+    # Errors
+    if r.errors.total_count > 0:
+        print()
+        err_pct = r.errors.total_cost / r.total_cost * 100 if r.total_cost > 0 else 0
+        print(
+            f"  Error sessions      ${r.errors.total_cost:>8,.2f}"
+            f"    {r.errors.total_count} sessions    {err_pct:.0f}%"
+        )
+        print("  " + "\u2500" * 43)
+        print(
+            f"  Fast errors (\u22645 turns):  {r.errors.fast_errors}"
+            f"    ${r.errors.fast_error_cost:,.2f}"
+        )
+        print(
+            f"  Slow errors (>20 turns): {r.errors.slow_errors}"
+            f"    ${r.errors.slow_error_cost:,.2f}"
+        )
+
+    # Reloads
+    if r.reloads.count > 0:
+        print()
+        rel_pct = r.reloads.total_cost / r.total_cost * 100 if r.total_cost > 0 else 0
+        print(
+            f"  Context reloads     ${r.reloads.total_cost:>8,.2f}"
+            f"    {r.reloads.count} sessions    {rel_pct:.0f}%"
+        )
+        print("  " + "\u2500" * 43)
+        print("  New session in same project within 10 min.")
+        print("  Resuming (claude --continue) would reuse cache.")
+
+    print()
+    print("Run `openflux replay <id>` on any session for details.")
+
+
+# ── replay ─────────────────────────────────────────────────────────────
+
+
+def cmd_replay(args: argparse.Namespace) -> None:
+    from openflux.waste import replay_session
+
+    sink = _get_sink()
+    try:
+        replay = replay_session(sink.conn, args.trace_id)
+    finally:
+        sink.close()
+
+    if replay is None:
+        print(f"Trace not found: {args.trace_id}", file=sys.stderr)
+        sys.exit(1)
+
+    _print_replay(replay)
+
+
+def _fmt_duration(ms: int) -> str:
+    if ms < 1000:
+        return f"{ms}ms"
+    secs = ms / 1000
+    if secs < 60:
+        return f"{secs:.0f}s"
+    mins = secs / 60
+    return f"{mins:.0f}m"
+
+
+def _print_replay(replay: SessionReplay) -> None:
+    s = replay
+    dur = _fmt_duration(s.duration_ms)
+    print(f'{s.trace_id} \u2014 "{s.task[:60]}"')
+    print(
+        f"{s.status} | {s.turn_count} turns | ${s.total_cost:.2f} | {dur} | {s.model}"
+    )
+    print("\u2500" * 60)
+    print()
+
+    loop_announced = False
+    for step in s.tools:
+        # Announce loop start
+        if (
+            s.loop_start is not None
+            and step.index - 1 == s.loop_start
+            and not loop_announced
+        ):
+            print(
+                f"    \u26a0 Loop detected: edit\u2192test cycle"
+                f" ({s.loop_cycles} cycles)"
+            )
+            loop_announced = True
+
+        mark = "\u2717" if step.error else "\u2713"
+        target = step.target[:45] if step.target else ""
+        summary = step.output_summary
+        suffix = f"  {summary}" if summary else ""
+        print(f"  {step.index:>3}  {step.name:<14s} {target:<45s} {mark}{suffix}")
+
+    # Summary
+    print()
+    if s.loop_start is not None:
+        prod_pct = s.productive_cost / s.total_cost * 100 if s.total_cost > 0 else 0
+        loop_pct = s.loop_cost / s.total_cost * 100 if s.total_cost > 0 else 0
+        print(f"  Productive:  ${s.productive_cost:.2f}  ({prod_pct:.0f}%)")
+        print(f"  Loop waste:  ${s.loop_cost:.2f}  ({loop_pct:.0f}%)")
+    else:
+        print(f"  Total cost:  ${s.total_cost:.2f}")
+        print("  No loops detected.")
+
+
+# ── digest ─────────────────────────────────────────────────────────────
+
+
+def cmd_digest(args: argparse.Namespace) -> None:
+    from openflux.waste import analyze_waste
+
+    sink = _get_sink()
+    try:
+        days: int = 7 if args.weekly else 1 if args.daily else 7
+        report = analyze_waste(sink.conn, days=days, agent=args.agent)
+
+        # Get top 3 most expensive sessions
+        top = sink.conn.execute(
+            "SELECT id, task, status, "
+            "(token_input * 15.0 + token_output * 75.0 "
+            "+ token_cache_read * 1.5 + token_cache_creation * 18.75) "
+            "/ 1000000.0 as cost "
+            "FROM traces "
+            "WHERE timestamp >= datetime('now', ? || ' days') "
+            + ("AND agent = ? " if args.agent else "")
+            + "ORDER BY cost DESC LIMIT 3",
+            ([f"-{days}"] + ([args.agent] if args.agent else [])),
+        ).fetchall()
+    finally:
+        sink.close()
+
+    period = "today" if days == 1 else f"last {days} days"
+    print(f"OpenFlux Digest \u2014 {period}")
+    print("\u2550" * 45)
+
+    waste = report.loop_cost + report.errors.total_cost + report.reloads.total_cost
+    waste_pct = waste / report.total_cost * 100 if report.total_cost > 0 else 0
+
+    print(
+        f"\n  {report.total_sessions} sessions | ${report.total_cost:,.2f} total"
+        f" | {waste_pct:.0f}% waste"
+    )
+
+    if report.loops:
+        print(
+            f"\n  Loops:   {len(report.loops)} sessions,"
+            f" ${report.loop_cost:,.2f} wasted"
+        )
+    if report.errors.total_count:
+        print(
+            f"  Errors:  {report.errors.total_count} sessions,"
+            f" ${report.errors.total_cost:,.2f}"
+        )
+    if report.reloads.count:
+        print(
+            f"  Reloads: {report.reloads.count} sessions,"
+            f" ${report.reloads.total_cost:,.2f}"
+        )
+
+    if top:
+        print("\n  Most expensive:")
+        for trace_id, task, status, cost in top:
+            task_short = (task or "")[:50]
+            mark = "\u2717" if status == "error" else "\u2713"
+            print(f"    {mark} ${cost:>6.2f}  {trace_id}  {task_short}")
+
+    print()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="openflux",
@@ -691,6 +908,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--port", type=int, default=5173, help="Port (default: 5173)")
     p_serve.add_argument("--db", help="Path to SQLite database")
     p_serve.set_defaults(func=cmd_serve)
+
+    p_waste = subs.add_parser("waste", help="Analyze wasted spend")
+    p_waste.add_argument(
+        "--days", type=int, default=30, help="Lookback window (default: 30)"
+    )
+    p_waste.add_argument("--agent", help="Filter by agent name")
+    p_waste.set_defaults(func=cmd_waste)
+
+    p_replay = subs.add_parser("replay", help="Replay a session's tool sequence")
+    p_replay.add_argument("trace_id", help="Trace ID to replay")
+    p_replay.set_defaults(func=cmd_replay)
+
+    p_digest = subs.add_parser("digest", help="Weekly/daily spending digest")
+    p_digest.add_argument("--weekly", action="store_true", help="Last 7 days")
+    p_digest.add_argument("--daily", action="store_true", help="Today only")
+    p_digest.add_argument("--agent", help="Filter by agent name")
+    p_digest.set_defaults(func=cmd_digest)
 
     return parser
 
