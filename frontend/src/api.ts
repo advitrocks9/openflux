@@ -4,7 +4,7 @@ import type {
   StatsResponse,
   TimelineResponse,
   TraceStats,
-  WasteReport,
+  EfficiencyReport,
   SessionReplay,
 } from "./types";
 
@@ -52,11 +52,11 @@ export function fetchTraceStats(id: string): Promise<TraceStats> {
   return get<TraceStats>(`/traces/${id}/stats`);
 }
 
-export function fetchWaste(days = 30, agent?: string): Promise<WasteReport> {
+export function fetchWaste(days = 30, agent?: string): Promise<EfficiencyReport> {
   const qs = new URLSearchParams();
   qs.set("days", String(days));
   if (agent) qs.set("agent", agent);
-  return get<WasteReport>(`/waste?${qs.toString()}`);
+  return get<EfficiencyReport>(`/waste?${qs.toString()}`);
 }
 
 export function fetchReplay(id: string): Promise<SessionReplay> {

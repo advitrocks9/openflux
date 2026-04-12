@@ -658,18 +658,12 @@ def _print_efficiency(r: EfficiencyReport, days: int) -> None:
         for cat in r.bash_breakdown[:12]:
             bar_w = int(cat.pct * 0.3)
             bar = "\u2588" * bar_w if bar_w > 0 else ""
-            print(
-                f"    {cat.name:<28s} {cat.calls:>5,}"
-                f"  ({cat.pct:>4.1f}%)  {bar}"
-            )
+            print(f"    {cat.name:<28s} {cat.calls:>5,}  ({cat.pct:>4.1f}%)  {bar}")
 
     # Overhead
     if r.overhead_calls > 0:
         print()
-        print(
-            f"  Agent overhead:  {r.overhead_calls:,} calls"
-            f"  ({r.overhead_pct:.1f}%)"
-        )
+        print(f"  Agent overhead:  {r.overhead_calls:,} calls  ({r.overhead_pct:.1f}%)")
         print("  " + "\u2500" * 53)
         print("  TaskCreate, ToolSearch, SendMessage, etc.")
 
@@ -725,8 +719,7 @@ def _print_replay(s: SessionReplay) -> None:
     dur = _fmt_duration(s.duration_ms)
     print(f'{s.trace_id} \u2014 "{s.task[:60]}"')
     print(
-        f"{s.status} | {s.turn_count} turns"
-        f" | ${s.total_cost:.2f} | {dur} | {s.model}"
+        f"{s.status} | {s.turn_count} turns | ${s.total_cost:.2f} | {dur} | {s.model}"
     )
     print("\u2500" * 65)
 

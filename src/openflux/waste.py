@@ -80,14 +80,23 @@ _TRACE_COST_COLS = (
 )
 
 _COL: dict[str, int] = {
-    "id": 0, "task": 1, "status": 2, "model": 3, "turn_count": 4,
-    "duration_ms": 5, "scope": 6, "token_input": 7, "token_output": 8,
-    "token_cache_read": 9, "token_cache_creation": 10,
+    "id": 0,
+    "task": 1,
+    "status": 2,
+    "model": 3,
+    "turn_count": 4,
+    "duration_ms": 5,
+    "scope": 6,
+    "token_input": 7,
+    "token_output": 8,
+    "token_cache_read": 9,
+    "token_cache_creation": 10,
 }
 
 
 def _row_cost(row: tuple[Any, ...]) -> float:
     from openflux._pricing import estimate_cost
+
     return estimate_cost(
         model=row[_COL["model"]] or "",
         input_tokens=row[_COL["token_input"]] or 0,
@@ -99,11 +108,21 @@ def _row_cost(row: tuple[Any, ...]) -> float:
 
 # ── Tool classification ───────────────────────────────────────────────
 
-_OVERHEAD_TOOLS = frozenset({
-    "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop",
-    "TaskOutput", "ToolSearch", "SendMessage", "EnterPlanMode",
-    "ExitPlanMode", "Skill",
-})
+_OVERHEAD_TOOLS = frozenset(
+    {
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskList",
+        "TaskGet",
+        "TaskStop",
+        "TaskOutput",
+        "ToolSearch",
+        "SendMessage",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "Skill",
+    }
+)
 
 _TOOL_CATEGORIES: list[tuple[str, str]] = [
     # (pattern in tool_input, category_name) — matched against Bash commands
@@ -187,9 +206,15 @@ def _detect_redundancy(
             continue  # overhead repetition is expected
         if key in ("Subagent",):
             continue
-        stats = pattern_stats.setdefault(key, {
-            "total": 0, "unique": 0, "redundant": 0, "sessions": 0,
-        })
+        stats = pattern_stats.setdefault(
+            key,
+            {
+                "total": 0,
+                "unique": 0,
+                "redundant": 0,
+                "sessions": 0,
+            },
+        )
         stats["total"] += times
         stats["unique"] += 1  # each (trace, input) pair is one unique
         stats["redundant"] += times - 1
@@ -241,13 +266,15 @@ def _session_redundancy(
 
     for cat, stats in cat_stats.items():
         if stats["redundant"] > 0:
-            patterns.append(RedundantPattern(
-                pattern=cat,
-                total_calls=stats["total"],
-                unique_calls=stats["unique"],
-                redundant_calls=stats["redundant"],
-                sessions=1,
-            ))
+            patterns.append(
+                RedundantPattern(
+                    pattern=cat,
+                    total_calls=stats["total"],
+                    unique_calls=stats["unique"],
+                    redundant_calls=stats["redundant"],
+                    sessions=1,
+                )
+            )
     patterns.sort(key=lambda p: p.redundant_calls, reverse=True)
     return patterns
 
@@ -323,7 +350,8 @@ def _parse_output_summary(name: str, tool_output: str, error: bool) -> str:
 
 
 def _build_tool_steps(
-    conn: sqlite3.Connection, trace_id: str,
+    conn: sqlite3.Connection,
+    trace_id: str,
 ) -> list[ToolStep]:
     rows = conn.execute(
         "SELECT name, tool_input, tool_output, error, timestamp "
@@ -364,7 +392,8 @@ def analyze_efficiency(
 
     # Total sessions and cost
     rows = conn.execute(
-        f"SELECT {_TRACE_COST_COLS} FROM traces WHERE {where}", params,
+        f"SELECT {_TRACE_COST_COLS} FROM traces WHERE {where}",
+        params,
     ).fetchall()
     total_cost = sum(_row_cost(r) for r in rows)
 
@@ -400,25 +429,29 @@ def analyze_efficiency(
     categories = sorted(
         [
             CategoryBreakdown(
-                name=k, calls=v["calls"],
+                name=k,
+                calls=v["calls"],
                 pct=v["calls"] / total_tools * 100 if total_tools else 0,
                 output_bytes=v["bytes"],
             )
             for k, v in cat_counts.items()
         ],
-        key=lambda c: c.calls, reverse=True,
+        key=lambda c: c.calls,
+        reverse=True,
     )
 
     bash_breakdown = sorted(
         [
             CategoryBreakdown(
-                name=k, calls=v["calls"],
+                name=k,
+                calls=v["calls"],
                 pct=v["calls"] / total_tools * 100 if total_tools else 0,
                 output_bytes=v["bytes"],
             )
             for k, v in bash_counts.items()
         ],
-        key=lambda c: c.calls, reverse=True,
+        key=lambda c: c.calls,
+        reverse=True,
     )
 
     # Redundancy
@@ -441,7 +474,8 @@ def analyze_efficiency(
 def replay_session(conn: sqlite3.Connection, trace_id: str) -> SessionReplay | None:
     """Build a detailed replay of a session's tool sequence with analysis."""
     row = conn.execute(
-        f"SELECT {_TRACE_COST_COLS} FROM traces WHERE id = ?", (trace_id,),
+        f"SELECT {_TRACE_COST_COLS} FROM traces WHERE id = ?",
+        (trace_id,),
     ).fetchone()
     if row is None:
         return None
@@ -468,13 +502,15 @@ def replay_session(conn: sqlite3.Connection, trace_id: str) -> SessionReplay | N
     breakdown = sorted(
         [
             CategoryBreakdown(
-                name=k, calls=v,
+                name=k,
+                calls=v,
                 pct=v / total * 100 if total else 0,
                 output_bytes=0,
             )
             for k, v in cat_counts.items()
         ],
-        key=lambda c: c.calls, reverse=True,
+        key=lambda c: c.calls,
+        reverse=True,
     )
 
     redundant = _session_redundancy(tool_inputs)

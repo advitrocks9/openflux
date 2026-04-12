@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 import { fetchWaste, fetchReplay } from "../api";
-import type { WasteReport, SessionReplay } from "../types";
+import type { EfficiencyReport, SessionReplay } from "../types";
 
 export function useWaste(days = 30) {
-  const [report, setReport] = useState<WasteReport | null>(null);
+  const [report, setReport] = useState<EfficiencyReport | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

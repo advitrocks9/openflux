@@ -91,41 +91,34 @@ export interface TraceStats {
   files_modified_count: number;
 }
 
-// Waste detection types
+// Efficiency analysis types
 
-export interface LoopSession {
-  trace_id: string;
-  task: string;
-  cost: number;
-  loop_start_index: number;
-  total_tools: number;
-  cycle_count: number;
-  productive_cost: number;
-  loop_cost: number;
+export interface CategoryBreakdown {
+  name: string;
+  calls: number;
+  pct: number;
+  output_bytes: number;
 }
 
-export interface ErrorSummary {
-  total_cost: number;
-  total_count: number;
-  fast_errors: number;
-  fast_error_cost: number;
-  slow_errors: number;
-  slow_error_cost: number;
+export interface RedundantPattern {
+  pattern: string;
+  total_calls: number;
+  unique_calls: number;
+  redundant_calls: number;
+  sessions: number;
 }
 
-export interface ReloadSummary {
-  total_cost: number;
-  count: number;
-}
-
-export interface WasteReport {
+export interface EfficiencyReport {
   total_sessions: number;
   total_cost: number;
-  productive_cost: number;
-  loops: LoopSession[];
-  loop_cost: number;
-  errors: ErrorSummary;
-  reloads: ReloadSummary;
+  total_tool_calls: number;
+  categories: CategoryBreakdown[];
+  overhead_calls: number;
+  overhead_pct: number;
+  redundant_patterns: RedundantPattern[];
+  total_redundant_calls: number;
+  redundancy_pct: number;
+  bash_breakdown: CategoryBreakdown[];
 }
 
 export interface ToolStep {
@@ -146,9 +139,7 @@ export interface SessionReplay {
   duration_ms: number;
   total_cost: number;
   tools: ToolStep[];
-  loop_start: number | null;
-  loop_cycles: number;
-  productive_cost: number;
-  loop_cost: number;
   scope: string;
+  tool_breakdown: CategoryBreakdown[];
+  redundant_in_session: RedundantPattern[];
 }
