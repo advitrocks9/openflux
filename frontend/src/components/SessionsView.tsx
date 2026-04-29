@@ -8,11 +8,7 @@ function shortSha(sha: string | null): string {
 
 function estimateCost(o: Outcome): string {
   if (!o.trace) return "—";
-  const input = o.trace.token_input + o.trace.token_cache_creation;
-  const output = o.trace.token_output;
-  // Rough Sonnet-class blended rate: $3/M in, $15/M out
-  const cost = (input * 3 + output * 15) / 1_000_000;
-  return `$${cost.toFixed(2)}`;
+  return `$${o.trace.cost_usd.toFixed(2)}`;
 }
 
 function TestsBadge({ passed }: { passed: boolean | null }) {
@@ -195,7 +191,11 @@ openflux install --hooks`}
 
         {outcomes.length > 0 && (
           <div className="mt-4 text-[11px] text-tertiary">
-            Cost is estimated using a Sonnet-class blended rate ($3/M in, $15/M out) and may diverge from your actual Anthropic invoice. Tokens come from the joined trace; lines and tests are captured at session start/end. Configure your test command via{" "}
+            Cost is computed server-side from per-model rates (Sonnet, Opus, Haiku, GPT-4o, Gemini, etc) and may diverge from your provider invoice. Override rates with{" "}
+            <code className="px-1 py-0.5 rounded bg-surface text-secondary">
+              OPENFLUX_RATES_JSON
+            </code>
+            . Configure your test command via{" "}
             <code className="px-1 py-0.5 rounded bg-surface text-secondary">
               OPENFLUX_TEST_CMD
             </code>

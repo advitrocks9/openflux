@@ -46,11 +46,14 @@ def test_outcomes_list_returns_records(sink: SQLiteSink) -> None:
 
 
 def test_outcomes_list_joins_trace_summary(sink: SQLiteSink) -> None:
+    from openflux.schema import TokenUsage
+
     trace = make_trace(
         agent="claude-code",
         session_id="joined",
         task="ship outcome view",
         model="claude-opus",
+        token_usage=TokenUsage(input_tokens=1_000_000, output_tokens=100_000),
     )
     sink.write(trace)
     sink.record_outcome(
@@ -66,6 +69,84 @@ def test_outcomes_list_joins_trace_summary(sink: SQLiteSink) -> None:
     assert o["trace"] is not None
     assert o["trace"]["task"] == "ship outcome view"
     assert o["trace"]["model"] == "claude-opus"
+    # Opus pricing: $15/M in + $75/M out → 1M*15 + 100k*75 = 15.00 + 7.50 = 22.50
+    assert o["trace"]["cost_usd"] == 22.50
+
+
+def test_outcomes_cost_for_sonnet(sink: SQLiteSink) -> None:
+    from conftest import make_trace
+
+    from openflux.schema import TokenUsage
+
+    trace = make_trace(
+        agent="claude-code",
+        session_id="sonnet-sess",
+        model="claude-sonnet-4-20250514",
+        token_usage=TokenUsage(input_tokens=1_000_000, output_tokens=100_000),
+    )
+    sink.write(trace)
+    sink.record_outcome(
+        session_id="sonnet-sess",
+        agent="claude-code",
+        captured_at="2026-04-29T13:30:00Z",
+    )
+    _, body = handle_request("/api/outcomes", sink)
+    o = body["outcomes"][0]
+    # Sonnet: $3/M in + $15/M out → 3.00 + 1.50 = 4.50
+    assert o["trace"]["cost_usd"] == 4.50
+
+
+def test_outcomes_cost_for_unknown_model_uses_default(sink: SQLiteSink) -> None:
+    from conftest import make_trace
+
+    from openflux.schema import TokenUsage
+
+    trace = make_trace(
+        agent="claude-code",
+        session_id="unknown-sess",
+        model="some-future-model-99",
+        token_usage=TokenUsage(input_tokens=1_000_000, output_tokens=1_000_000),
+    )
+    sink.write(trace)
+    sink.record_outcome(
+        session_id="unknown-sess",
+        agent="claude-code",
+        captured_at="2026-04-29T14:00:00Z",
+    )
+    _, body = handle_request("/api/outcomes", sink)
+    o = body["outcomes"][0]
+    # Default: $1/M in + $3/M out → 1.00 + 3.00 = 4.00
+    assert o["trace"]["cost_usd"] == 4.00
+
+
+def test_outcomes_cost_env_override(
+    sink: SQLiteSink,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from conftest import make_trace
+
+    from openflux.schema import TokenUsage
+
+    monkeypatch.setenv(
+        "OPENFLUX_RATES_JSON",
+        '{"my-custom-model": [10.0, 20.0]}',
+    )
+    trace = make_trace(
+        agent="claude-code",
+        session_id="custom",
+        model="my-custom-model",
+        token_usage=TokenUsage(input_tokens=1_000_000, output_tokens=500_000),
+    )
+    sink.write(trace)
+    sink.record_outcome(
+        session_id="custom",
+        agent="claude-code",
+        captured_at="2026-04-29T15:00:00Z",
+    )
+    _, body = handle_request("/api/outcomes", sink)
+    o = body["outcomes"][0]
+    # Custom: $10/M in + $20/M out → 10.00 + 10.00 = 20.00
+    assert o["trace"]["cost_usd"] == 20.00
 
 
 def test_outcomes_list_limit(sink: SQLiteSink) -> None:

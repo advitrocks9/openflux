@@ -3,11 +3,65 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from openflux.sinks.sqlite import SQLiteSink
+
+# Try to use the project's authoritative pricing module if available.
+# Falls back to a minimal table if it isn't on this branch yet (the
+# parallel cost-intelligence WIP introduces openflux._pricing). When
+# branches merge, this conditional collapses to the import path.
+try:
+    from openflux._pricing import (
+        estimate_cost as _estimate_cost,  # type: ignore[import-not-found]
+    )
+except ImportError:
+    _FALLBACK_RATES: list[tuple[str, float, float]] = [
+        ("opus", 15.00, 75.00),
+        ("sonnet", 3.00, 15.00),
+        ("haiku", 0.25, 1.25),
+        ("claude-", 3.00, 15.00),
+        ("gpt-4o-mini", 0.15, 0.60),
+        ("gpt-4o", 2.50, 10.00),
+        ("o3", 10.00, 40.00),
+        ("o1", 15.00, 60.00),
+        ("gemini", 0.075, 0.30),
+    ]
+    _FALLBACK_DEFAULT = (1.00, 3.00)
+
+    def _estimate_cost(  # type: ignore[no-redef]
+        model: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+    ) -> float:
+        # Read env override once per call; rare and small enough that the
+        # cost of re-parsing isn't worth caching.
+        override = os.environ.get("OPENFLUX_RATES_JSON")
+        if override:
+            try:
+                rates = json.loads(override)
+                rate = rates.get(model.lower())
+                if rate and len(rate) >= 2:
+                    in_r, out_r = float(rate[0]), float(rate[1])
+                    return (input_tokens * in_r + output_tokens * out_r) / 1_000_000
+            except (ValueError, TypeError):
+                pass
+
+        model_lower = model.lower()
+        for prefix, in_r, out_r in _FALLBACK_RATES:
+            if prefix in model_lower:
+                # Cache tokens at half the input rate as a rough approximation.
+                cache_blended = (cache_read_tokens + cache_creation_tokens) * in_r * 0.5
+                return (
+                    input_tokens * in_r + output_tokens * out_r + cache_blended
+                ) / 1_000_000
+        in_r, out_r = _FALLBACK_DEFAULT
+        return (input_tokens * in_r + output_tokens * out_r) / 1_000_000
 
 # Valid sort columns to prevent SQL injection
 _SORT_COLUMNS = frozenset(
@@ -285,6 +339,13 @@ def _attach_trace_summary(
     ).fetchone()
     trace_summary: dict[str, Any] | None = None
     if row:
+        cost_usd = _estimate_cost(
+            model=row[2] or "",
+            input_tokens=row[4],
+            output_tokens=row[5],
+            cache_read_tokens=row[6],
+            cache_creation_tokens=row[7],
+        )
         trace_summary = {
             "trace_id": row[0],
             "task": row[1],
@@ -294,6 +355,7 @@ def _attach_trace_summary(
             "token_output": row[5],
             "token_cache_read": row[6],
             "token_cache_creation": row[7],
+            "cost_usd": round(cost_usd, 4),
         }
     return {**outcome, "trace": trace_summary}
 

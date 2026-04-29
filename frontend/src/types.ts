@@ -100,6 +100,7 @@ export interface OutcomeTraceSummary {
   token_output: number;
   token_cache_read: number;
   token_cache_creation: number;
+  cost_usd: number;
 }
 
 export interface Outcome {
