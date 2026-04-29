@@ -14,7 +14,7 @@ from conftest import (
 )
 
 from openflux.schema import ContextType, TokenUsage
-from openflux.sinks.sqlite import SQLiteSink
+from openflux.sinks.sqlite import _SCHEMA_VERSION, SQLiteSink
 
 
 @pytest.fixture()
@@ -500,10 +500,10 @@ END;
         # Reopening with SQLiteSink triggers migration
         sink = SQLiteSink(path=db)
 
-        # Schema version should now be 2
+        # Schema version should match current
         row = sink._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
         assert row is not None
-        assert row[0] == 2
+        assert row[0] == _SCHEMA_VERSION
 
         # Original trace must still be readable
         trace = sink.get(trace_id)
