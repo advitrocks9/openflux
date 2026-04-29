@@ -200,6 +200,12 @@ Launches a local web dashboard with:
 
 The dashboard is built with React, Tailwind CSS, and Recharts, bundled into the Python package. No Node.js required to run it.
 
+## Compared to other Claude Code tools
+
+The space already has [ccusage](https://github.com/ryoppippi/ccusage) (cost reporting) and [CodeBurn](https://github.com/getagentseal/codeburn) (per-tool waste grading). OpenFlux is the only one that links a session to its git diff and test result.
+
+See [docs/comparison.md](docs/comparison.md) for the side-by-side, including when NOT to pick OpenFlux.
+
 ## Works with
 
 The outcome view today targets Claude Code (where the wedge is sharpest). The underlying Trace schema is framework-agnostic and ships adapters for the rest of the agent ecosystem so the same dashboard, sinks, and CLI work everywhere.
