@@ -5,16 +5,19 @@ import { TraceTable } from "./components/TraceTable";
 import { TraceDetail } from "./components/TraceDetail";
 import { FilterBar } from "./components/FilterBar";
 import { StatsView } from "./components/StatsView";
+import { SessionsView } from "./components/SessionsView";
 import { CommandPalette } from "./components/CommandPalette";
 import { useTraces } from "./hooks/useTraces";
 import { useTrace } from "./hooks/useTrace";
 import { useStats } from "./hooks/useStats";
 import { useKeyboard } from "./hooks/useKeyboard";
 
-type View = "traces" | "stats";
+type View = "traces" | "sessions" | "stats";
 
 function getViewFromHash(): View {
-  return window.location.hash === "#stats" ? "stats" : "traces";
+  if (window.location.hash === "#stats") return "stats";
+  if (window.location.hash === "#sessions") return "sessions";
+  return "traces";
 }
 
 const PAGE_SIZE = 50;
@@ -65,7 +68,7 @@ export function App() {
   }, []);
 
   const handleViewChange = useCallback((v: View) => {
-    window.location.hash = v === "stats" ? "#stats" : "#traces";
+    window.location.hash = `#${v}`;
     setView(v);
     setSelectedTraceId(null);
   }, []);
@@ -153,6 +156,8 @@ export function App() {
               )}
             </AnimatePresence>
           </div>
+        ) : view === "sessions" ? (
+          <SessionsView />
         ) : (
           <div className="overflow-auto h-full">
             <StatsView
