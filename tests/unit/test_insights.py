@@ -64,10 +64,7 @@ def cost_db(tmp_path):
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     auth = '{"file_path": "src/auth.py"}'
     pytest_cmd = '{"command": "pytest"}'
-    edit_input = (
-        '{"file_path": "src/main.py",'
-        ' "old_string": "x", "new_string": "y"}'
-    )
+    edit_input = '{"file_path": "src/main.py", "old_string": "x", "new_string": "y"}'
 
     # Session 1: Good cache efficiency
     sink.write(
@@ -89,11 +86,13 @@ def cost_db(tmp_path):
             ),
             tools_used=[
                 ToolRecord(
-                    name="Read", tool_input=auth,
+                    name="Read",
+                    tool_input=auth,
                     timestamp=now,
                 ),
                 ToolRecord(
-                    name="Edit", tool_input=auth,
+                    name="Edit",
+                    tool_input=auth,
                     timestamp=now,
                 ),
                 ToolRecord(
