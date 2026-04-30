@@ -16,7 +16,7 @@ from openflux.sinks.sqlite import SQLiteSink
 # branches merge, this conditional collapses to the import path.
 try:
     from openflux._pricing import (
-        estimate_cost as _estimate_cost,  # type: ignore[import-not-found]
+        estimate_cost as _estimate_cost,  # pyright: ignore[reportMissingImports, reportUnknownVariableType]
     )
 except ImportError:
     _FALLBACK_RATES: list[tuple[str, float, float]] = [
