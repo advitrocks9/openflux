@@ -4,6 +4,9 @@ import type {
   StatsResponse,
   TimelineResponse,
   TraceStats,
+  CostOverview,
+  SessionCost,
+  CostAnomaly,
   OutcomesResponse,
 } from "./types";
 
@@ -49,6 +52,37 @@ export function fetchTimeline(days = 30): Promise<TimelineResponse> {
 
 export function fetchTraceStats(id: string): Promise<TraceStats> {
   return get<TraceStats>(`/traces/${id}/stats`);
+}
+
+export function fetchInsights(days = 7, agent?: string): Promise<CostOverview> {
+  const qs = new URLSearchParams();
+  qs.set("days", String(days));
+  if (agent) qs.set("agent", agent);
+  return get<CostOverview>(`/insights?${qs.toString()}`);
+}
+
+export function fetchInsightsSessions(
+  days = 7,
+  agent?: string,
+  limit = 20,
+  sort = "cost",
+): Promise<{ sessions: SessionCost[] }> {
+  const qs = new URLSearchParams();
+  qs.set("days", String(days));
+  qs.set("limit", String(limit));
+  qs.set("sort", sort);
+  if (agent) qs.set("agent", agent);
+  return get<{ sessions: SessionCost[] }>(`/insights/sessions?${qs.toString()}`);
+}
+
+export function fetchInsightsAnomalies(
+  days = 7,
+  agent?: string,
+): Promise<{ anomalies: CostAnomaly[] }> {
+  const qs = new URLSearchParams();
+  qs.set("days", String(days));
+  if (agent) qs.set("agent", agent);
+  return get<{ anomalies: CostAnomaly[] }>(`/insights/anomalies?${qs.toString()}`);
 }
 
 export function fetchOutcomes(limit = 50): Promise<OutcomesResponse> {

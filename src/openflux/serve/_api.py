@@ -91,6 +91,12 @@ def handle_request(path: str, sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
         return _handle_stats(sink)
     if clean_path == "/api/stats/timeline":
         return _handle_timeline(qs, sink)
+    if clean_path == "/api/insights":
+        return _handle_insights(qs, sink)
+    if clean_path == "/api/insights/sessions":
+        return _handle_insights_sessions(qs, sink)
+    if clean_path == "/api/insights/anomalies":
+        return _handle_insights_anomalies(qs, sink)
     if clean_path.startswith("/api/traces/"):
         trace_id = clean_path[len("/api/traces/") :]
         return _handle_trace_detail(trace_id, sink)
@@ -385,3 +391,46 @@ def _handle_timeline(
             for r in rows
         ],
     }
+
+
+def _handle_insights(
+    qs: dict[str, list[str]], sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    from dataclasses import asdict
+
+    from openflux.insights import cost_overview
+
+    days = min(_qs_int(qs, "days", 7), 365)
+    agent = _qs_str(qs, "agent")
+    overview = cost_overview(sink.conn, days=days, agent=agent or None)
+    return 200, asdict(overview)
+
+
+def _handle_insights_sessions(
+    qs: dict[str, list[str]], sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    from dataclasses import asdict
+
+    from openflux.insights import session_costs
+
+    days = min(_qs_int(qs, "days", 7), 365)
+    agent = _qs_str(qs, "agent")
+    limit = min(_qs_int(qs, "limit", 20), 100)
+    sort = _qs_str(qs, "sort") or "cost"
+    sessions = session_costs(
+        sink.conn, days=days, agent=agent or None, limit=limit, sort=sort
+    )
+    return 200, {"sessions": [asdict(s) for s in sessions]}
+
+
+def _handle_insights_anomalies(
+    qs: dict[str, list[str]], sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    from dataclasses import asdict
+
+    from openflux.insights import detect_anomalies
+
+    days = min(_qs_int(qs, "days", 7), 365)
+    agent = _qs_str(qs, "agent")
+    anomalies = detect_anomalies(sink.conn, days=days, agent=agent or None)
+    return 200, {"anomalies": [asdict(a) for a in anomalies]}

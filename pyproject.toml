@@ -101,4 +101,5 @@ exclude = [
     "src/openflux/adapters/langchain.py",
     "src/openflux/adapters/mcp.py",
     "src/openflux/adapters/openai_agents.py",
+    "src/openflux/waste.py",
 ]

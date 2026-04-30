@@ -12,7 +12,7 @@ from openflux.sinks.base import Sink
 
 _DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
-_SCHEMA_VERSION = 5  # outcomes table; v3 + v4 reserved for parallel WIP
+_SCHEMA_VERSION = 5
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -85,6 +85,24 @@ CREATE TABLE IF NOT EXISTS trace_tools (
     error BOOLEAN DEFAULT 0,
     timestamp TEXT
 );
+
+-- One row per real Anthropic API call (PK = provider message id).
+-- Resumed/forked sessions cause the same message.id to appear in many
+-- transcripts; PK dedup ensures we only count each billed call once.
+CREATE TABLE IF NOT EXISTS billable_messages (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    model TEXT DEFAULT '',
+    timestamp TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_billable_session ON billable_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_billable_timestamp ON billable_messages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_billable_model ON billable_messages(model);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS traces_fts USING fts5(
     task, decision, correction, scope,
@@ -203,6 +221,10 @@ class SQLiteSink(Sink):
             self._conn.executescript(_SCHEMA_SQL)
         if current_version == 1:
             self._migrate_fts_v2()
+        if current_version < 3:
+            self._migrate_dedup_sessions_v3()
+        if current_version < 4:
+            self._migrate_billable_messages_v4()
         if current_version < 5:
             self._migrate_outcomes_v5()
 
@@ -212,13 +234,68 @@ class SQLiteSink(Sink):
         )
         self._conn.commit()
 
+    def _migrate_billable_messages_v4(self) -> None:
+        """Create the global per-Anthropic-message-id billing table.
+
+        Pre-v4 cost was summed across the per-session traces table, which
+        double-counted whenever the same Anthropic API call appeared in
+        multiple resumed/forked transcripts. This table is keyed on
+        message.id so each billed call counts exactly once.
+        """
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS billable_messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                model TEXT DEFAULT '',
+                timestamp TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_billable_session
+                ON billable_messages(session_id);
+            CREATE INDEX IF NOT EXISTS idx_billable_timestamp
+                ON billable_messages(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_billable_model
+                ON billable_messages(model);
+        """)
+
+    def _migrate_dedup_sessions_v3(self) -> None:
+        """Collapse multi-row sessions to one row apiece.
+
+        Earlier versions inserted a fresh row every time the Claude Code
+        Stop hook fired, with cumulative token counts. SUM aggregates over
+        those rows multi-counted the same tokens (display showed ~5x real
+        cost). Keep only the latest row per (session_id, agent); the others
+        are mid-session snapshots already subsumed by it.
+        """
+        self._conn.execute(
+            """
+            DELETE FROM traces
+            WHERE session_id != ''
+              AND agent != ''
+              AND id NOT IN (
+                SELECT id FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY session_id, agent
+                               ORDER BY timestamp DESC, rowid DESC
+                           ) AS rn
+                    FROM traces
+                    WHERE session_id != '' AND agent != ''
+                )
+                WHERE rn = 1
+              )
+            """
+        )
+
     def _migrate_outcomes_v5(self) -> None:
         """Add outcomes table linking sessions to git diff + test results.
 
-        v3 and v4 are reserved for parallel cost-intelligence migrations
-        (dedup sessions, billable_messages). Idempotent: CREATE TABLE
-        IF NOT EXISTS, so safe to run regardless of which order this and
-        the cost-intelligence migrations land in.
+        Idempotent: CREATE TABLE IF NOT EXISTS, so safe to run regardless
+        of which order this and the cost-intelligence migrations land in.
         """
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS outcomes (
@@ -282,11 +359,72 @@ class SQLiteSink(Sink):
         cur = self._conn.cursor()
         cur.execute("BEGIN")
         try:
+            # Adapters that re-emit cumulative state for the same session
+            # (notably claude-code's Stop hook) would otherwise insert one
+            # row per emit and double-count tokens. Replace any prior row
+            # for the same (session_id, agent) so each session has exactly
+            # one trace. FK CASCADE clears child rows.
+            if trace.session_id and trace.agent:
+                cur.execute(
+                    "DELETE FROM traces WHERE session_id = ? AND agent = ?",
+                    (trace.session_id, trace.agent),
+                )
             self._insert_trace(cur, trace, tok)
             self._insert_context(cur, trace)
             self._insert_searches(cur, trace)
             self._insert_sources(cur, trace)
             self._insert_tools(cur, trace)
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
+
+    def record_messages(
+        self,
+        agent: str,
+        session_id: str,
+        messages: dict[str, dict[str, int | str]],
+    ) -> None:
+        """Upsert one row per real provider message.
+
+        `messages` maps message_id → dict with model/timestamp/input_tokens/
+        output_tokens/cache_read_tokens/cache_creation_tokens. Same message_id
+        across multiple sessions is collapsed by the PRIMARY KEY (the same
+        Anthropic API call gets billed once, not once per resumed session).
+        """
+        if not messages:
+            return
+        cur = self._conn.cursor()
+        cur.execute("BEGIN")
+        try:
+            for mid, m in messages.items():
+                cur.execute(
+                    "INSERT INTO billable_messages "
+                    "(message_id, session_id, agent, model, timestamp, "
+                    "input_tokens, output_tokens, "
+                    "cache_read_tokens, cache_creation_tokens) "
+                    "VALUES (?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(message_id) DO UPDATE SET "
+                    # Take MAX to handle streaming snapshots where a later
+                    # write of the same id has higher output_tokens.
+                    "  input_tokens = MAX(input_tokens, excluded.input_tokens), "
+                    "  output_tokens = MAX(output_tokens, excluded.output_tokens), "
+                    "  cache_read_tokens = MAX(cache_read_tokens, "
+                    "                          excluded.cache_read_tokens), "
+                    "  cache_creation_tokens = MAX(cache_creation_tokens, "
+                    "                              excluded.cache_creation_tokens)",
+                    (
+                        mid,
+                        session_id,
+                        agent,
+                        m.get("model", ""),
+                        m.get("timestamp", ""),
+                        m.get("input_tokens", 0),
+                        m.get("output_tokens", 0),
+                        m.get("cache_read_tokens", 0),
+                        m.get("cache_creation_tokens", 0),
+                    ),
+                )
             cur.execute("COMMIT")
         except Exception:
             cur.execute("ROLLBACK")
@@ -493,13 +631,21 @@ class SQLiteSink(Sink):
     ) -> list[dict[str, Any]]:
         where, params = self._build_filter(days, agent)
         rows = self._conn.execute(
-            "SELECT model, SUM(token_input), SUM(token_output) "
+            "SELECT model, SUM(token_input), SUM(token_output), "
+            "SUM(token_cache_read), SUM(token_cache_creation) "
             f"FROM traces WHERE {where} "
             "GROUP BY model ORDER BY SUM(token_input) + SUM(token_output) DESC",
             params,
         ).fetchall()
         return [
-            {"model": r[0] or "(unknown)", "input": r[1], "output": r[2]} for r in rows
+            {
+                "model": r[0] or "(unknown)",
+                "input": r[1],
+                "output": r[2],
+                "cache_read": r[3] or 0,
+                "cache_creation": r[4] or 0,
+            }
+            for r in rows
         ]
 
     def token_by_agent(

@@ -10,18 +10,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from openflux._pricing import estimate_cost as _estimate_cost_full
 from openflux.sinks.sqlite import SQLiteSink
 
 DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
-
-# Per-million-token pricing: (input_rate, output_rate)
-_MODEL_RATES: list[tuple[str, float, float]] = [
-    ("gpt-4o-mini", 0.15, 0.60),
-    ("gpt-4o", 2.50, 10.00),
-    ("claude-", 3.00, 15.00),
-    ("gemini", 0.075, 0.30),
-]
-_DEFAULT_RATE = (1.00, 3.00)
 
 
 def _hook_cmd(subcommand: str) -> str:
@@ -129,14 +121,16 @@ def _format_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate USD cost from model name and token counts."""
-    model_lower = model.lower()
-    for prefix, in_rate, out_rate in _MODEL_RATES:
-        if prefix in model_lower:
-            return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
-    in_rate, out_rate = _DEFAULT_RATE
-    return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
+def _estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int = 0,
+    cache_creation: int = 0,
+) -> float:
+    return _estimate_cost_full(
+        model, input_tokens, output_tokens, cache_read, cache_creation
+    )
 
 
 def _bar(value: int, max_value: int, width: int = 12) -> str:
@@ -368,10 +362,13 @@ def _print_status_tokens(conn: sqlite3.Connection) -> None:
 
     # Estimate cost across all models
     model_rows = conn.execute(
-        "SELECT model, SUM(token_input), SUM(token_output) FROM traces GROUP BY model"
+        "SELECT model, SUM(token_input), SUM(token_output), "
+        "SUM(token_cache_read), SUM(token_cache_creation) "
+        "FROM traces GROUP BY model"
     ).fetchall()
     total_cost = sum(
-        _estimate_cost(m or "", ti or 0, to or 0) for m, ti, to in model_rows
+        _estimate_cost(m or "", ti or 0, to or 0, cr or 0, cc or 0)
+        for m, ti, to, cr, cc in model_rows
     )
 
     print("\nToken usage (all time):")
@@ -384,72 +381,74 @@ def _print_status_tokens(conn: sqlite3.Connection) -> None:
 
 
 def cmd_cost(args: argparse.Namespace) -> None:
+    from openflux.insights import cost_overview
+
     sink = _get_sink()
     try:
-        days: int = args.days
-        agent: str | None = args.agent or None
-
-        summary = sink.token_summary(days=days, agent=agent)
-        by_model = sink.token_by_model(days=days, agent=agent)
-        by_agent = sink.token_by_agent(days=days, agent=agent)
-        by_day = sink.token_by_day(days=days, agent=agent)
+        overview = cost_overview(sink.conn, days=args.days, agent=args.agent or None)
     finally:
         sink.close()
 
-    _print_cost_header(days, summary)
-    _print_cost_by_model(by_model)
-    _print_cost_by_agent(by_agent)
-    _print_cost_by_day(by_day)
+    _print_cost_overview(overview, args.days)
 
 
-def _print_cost_header(days: int, summary: dict[str, Any]) -> None:
-    print(f"Token Usage (last {days} days)")
-    print("\u2500" * 45)
-    print(f"  Traces:     {summary['traces']:,}")
-    print(f"  Input:      {summary['input']:>12,} tokens")
-    print(f"  Output:     {summary['output']:>12,} tokens")
-    print(f"  Total:      {summary['total']:>12,} tokens")
+def _print_cost_overview(overview: object, days: int) -> None:
+    from openflux.insights import CostOverview
 
-    # Cost needs per-model breakdown to apply correct rates
-    # but we can estimate from total with a simple heuristic
-    # (the by-model section will show accurate per-model costs)
+    o: CostOverview = overview  # type: ignore[assignment]
+    print(f"Cost intelligence: last {days} days")
+    print("\u2550" * 55)
+    print()
+    print(f"  Total spend:      ${o.total_cost:,.2f}")
+    print(f"  Sessions:         {o.total_sessions:,}")
+    print(f"  Burn rate:        ${o.daily_burn_rate:,.2f}/day")
+    print(f"  Projected month:  ${o.projected_monthly:,.2f}")
 
+    # Cache efficiency: the #1 actionable metric
+    print()
+    if o.total_cache_read_tokens > 0 or o.total_cache_creation_tokens > 0:
+        print(f"  Cache hit ratio:  {o.cache_hit_ratio:.0%}")
+        print(f"  Cache savings:    ${o.cache_savings:,.2f}")
+        if o.cost_without_cache > 0:
+            pct_saved = o.cache_savings / o.cost_without_cache * 100
+            print(f"  You saved {pct_saved:.0f}% vs no caching")
+    else:
+        print("  Cache:            No cache data (check adapter config)")
 
-def _print_cost_by_model(by_model: list[dict[str, Any]]) -> None:
-    if not by_model:
-        return
-    print("\nBy model:")
-    for row in by_model:
-        total = row["input"] + row["output"]
-        cost = _estimate_cost(row["model"], row["input"], row["output"])
-        print(f"  {row['model']:30s} {total:>12,} tokens  ${cost:,.2f}")
+    # By model
+    if o.by_model:
+        print()
+        print("  By model:")
+        print("  " + "\u2500" * 53)
+        for m in o.by_model:
+            hit = m.cache_hit_ratio
+            cache_str = f"  cache: {hit:.0%}" if m.cache_read_tokens else ""
+            print(
+                f"    {m.model:<28s} ${m.cost:>7,.2f}"
+                f"  ({m.session_count} sessions){cache_str}"
+            )
 
+    # Daily breakdown
+    if o.by_day:
+        print()
+        print("  Daily:")
+        print("  " + "\u2500" * 53)
+        max_cost = max(d.cost for d in o.by_day) if o.by_day else 0
+        for d in o.by_day:
+            try:
+                dt = datetime.strptime(d.date, "%Y-%m-%d")
+                label = dt.strftime("%b %d")
+            except (ValueError, TypeError):
+                label = d.date
+            bar = _bar(int(d.cost * 100), int(max_cost * 100))
+            hit = d.cache_hit_ratio
+            cache_str = f"  cache: {hit:.0%}" if d.cache_read_tokens else ""
+            print(
+                f"    {label}  {bar:12s}  ${d.cost:>6,.2f}"
+                f"  ({d.sessions} sessions){cache_str}"
+            )
 
-def _print_cost_by_agent(by_agent: list[dict[str, Any]]) -> None:
-    if not by_agent:
-        return
-    print("\nBy agent:")
-    for row in by_agent:
-        total = row["input"] + row["output"]
-        print(f"  {row['agent']:30s} {row['traces']:>4} traces {total:>12,} tokens")
-
-
-def _print_cost_by_day(by_day: list[dict[str, Any]]) -> None:
-    if not by_day:
-        return
-    max_total = max((r["input"] + r["output"]) for r in by_day)
-
-    print("\nDaily breakdown:")
-    for row in by_day:
-        total = row["input"] + row["output"]
-        bar = _bar(total, max_total)
-        # Format date as "Mar 27" style
-        try:
-            dt = datetime.strptime(row["date"], "%Y-%m-%d")
-            label = dt.strftime("%b %d")
-        except (ValueError, TypeError):
-            label = str(row["date"])
-        print(f"  {label}  {bar:12s}  {row['traces']:>3} traces {total:>12,} tokens")
+    print()
 
 
 # ── forget ──────────────────────────────────────────────────────────────
@@ -669,6 +668,317 @@ def cmd_serve(args: argparse.Namespace) -> None:
     serve(port=args.port, db_path=db)
 
 
+# ── backfill ──────────────────────────────────────────────────────────
+
+
+def cmd_backfill(args: argparse.Namespace) -> None:
+    """Import all historical Claude Code transcripts into OpenFlux."""
+    from openflux._util import generate_trace_id
+    from openflux.adapters._claude_code import (
+        _parse_transcript,  # pyright: ignore[reportPrivateUsage]
+        _write_to_sinks,  # pyright: ignore[reportPrivateUsage]
+    )
+    from openflux.schema import Status, Trace
+
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.exists():
+        print("No Claude Code projects found at ~/.claude/projects/")
+        return
+
+    refresh = bool(getattr(args, "refresh", False))
+
+    # Collect all existing session IDs to avoid duplicates
+    db_path = _get_db_path()
+    existing: set[str] = set()
+    if db_path.exists():
+        sink = SQLiteSink(path=db_path)
+        try:
+            rows = sink.conn.execute(
+                "SELECT session_id FROM traces WHERE agent = 'claude-code'"
+            ).fetchall()
+            existing = {r[0] for r in rows}
+        finally:
+            sink.close()
+
+    # Find all JSONL transcript files
+    transcripts = sorted(projects_dir.rglob("*.jsonl"))
+    if not transcripts:
+        print("No transcript files found.")
+        return
+
+    print(f"Found {len(transcripts)} transcript(s) in {projects_dir}")
+    if existing:
+        action = "re-parsing" if refresh else "skipping"
+        print(f"Already imported: {len(existing)} session(s) ({action})")
+
+    imported = 0
+    skipped = 0
+    errored = 0
+
+    for path in transcripts:
+        session_id = path.stem
+        if session_id in existing and not refresh:
+            skipped += 1
+            continue
+
+        try:
+            td = _parse_transcript(path)
+        except Exception:
+            errored += 1
+            continue
+
+        # Skip empty transcripts (no user messages)
+        if td.turn_count == 0:
+            skipped += 1
+            continue
+
+        # Derive project/scope from path
+        # ~/.claude/projects/-Users-foo-bar/session.jsonl
+        project_dir_name = path.parent.name
+        scope = td.scope
+        if not scope and project_dir_name:
+            # -Users-foo-bar → bar
+            parts = project_dir_name.split("-")
+            scope = parts[-1] if parts else project_dir_name
+
+        from openflux.adapters._claude_code import (
+            _BILLABLE_MESSAGES_KEY,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        trace = Trace(
+            id=generate_trace_id(),
+            timestamp=(
+                td.context[0].timestamp
+                if td.context and td.context[0].timestamp
+                else path.stat().st_mtime.__str__()
+            ),
+            agent="claude-code",
+            session_id=session_id,
+            model=td.model,
+            task=td.task,
+            decision=td.decision,
+            status=Status.COMPLETED,
+            correction=td.correction,
+            scope=scope,
+            context=td.context,
+            turn_count=td.turn_count,
+            token_usage=td.token_usage,
+            duration_ms=td.duration_ms,
+        )
+        if td.messages:
+            trace.metadata[_BILLABLE_MESSAGES_KEY] = td.messages
+
+        # Use first entry timestamp if available
+        try:
+            import json as _json
+
+            first_line = path.read_text(encoding="utf-8", errors="ignore").split(
+                "\n", 1
+            )[0]
+            first_entry = _json.loads(first_line)
+            ts = first_entry.get("timestamp", "")
+            if ts:
+                trace.timestamp = ts
+        except Exception:
+            pass
+
+        try:
+            _write_to_sinks(trace)
+            imported += 1
+        except Exception:
+            errored += 1
+
+    print(f"\nDone: {imported} imported, {skipped} skipped, {errored} errors")
+
+
+# ── sessions ──────────────────────────────────────────────────────────
+
+
+def cmd_sessions(args: argparse.Namespace) -> None:
+    from openflux.insights import session_costs
+
+    sink = _get_sink()
+    try:
+        sessions = session_costs(
+            sink.conn,
+            days=args.days,
+            agent=args.agent or None,
+            limit=args.limit,
+            sort=args.sort,
+        )
+    finally:
+        sink.close()
+
+    if not sessions:
+        print("No sessions found.")
+        return
+
+    sort_label = {
+        "cost": "most expensive",
+        "cache": "worst cache",
+        "time": "most recent",
+    }
+    print(f"Sessions: {sort_label.get(args.sort, args.sort)} first")
+    print("\u2550" * 75)
+
+    for s in sessions:
+        mark = "\u2717" if s.status == "error" else "\u2713"
+        cache_str = f"{s.cache_hit_ratio:.0%}" if s.cache_read_tokens else "  -"
+        dur = _fmt_duration(s.duration_ms)
+        task = _truncate(s.task, 40)
+        print(
+            f"  {mark} ${s.cost:>6.2f}  cache:{cache_str:>4s}"
+            f"  {s.tool_count:>3} tools  {dur:>5s}  {s.trace_id}  {task}"
+        )
+
+    total_cost = sum(s.cost for s in sessions)
+    print(f"\n  {len(sessions)} sessions shown, ${total_cost:,.2f} total")
+
+
+def _fmt_duration(ms: int) -> str:
+    if ms < 1000:
+        return f"{ms}ms"
+    secs = ms / 1000
+    if secs < 60:
+        return f"{secs:.0f}s"
+    mins = secs / 60
+    return f"{mins:.0f}m"
+
+
+# ── budget ────────────────────────────────────────────────────────────
+
+
+def cmd_budget(args: argparse.Namespace) -> None:
+    if args.budget_command == "check":
+        _budget_check(args)
+    elif args.budget_command == "set":
+        _budget_set(args)
+    else:
+        print("Usage: openflux budget check|set")
+        sys.exit(1)
+
+
+def _budget_check(args: argparse.Namespace) -> None:
+    from openflux.insights import budget_status
+
+    budget = _load_budget()
+    if budget is None:
+        print("No budget set. Run: openflux budget set <amount>")
+        print("  Example: openflux budget set 50")
+        return
+
+    sink = _get_sink()
+    try:
+        status = budget_status(sink.conn, daily_budget=budget)
+    finally:
+        sink.close()
+
+    _print_budget(status)
+
+
+def _budget_set(args: argparse.Namespace) -> None:
+    amount = args.amount
+    config_path = Path.home() / ".openflux" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    config: dict[str, Any] = {}
+    if config_path.exists():
+        import contextlib
+
+        with contextlib.suppress(json.JSONDecodeError):
+            config = json.loads(config_path.read_text())
+
+    config["daily_budget"] = amount
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    print(f"Daily budget set to ${amount:.2f}")
+    print("Run `openflux budget check` to see status.")
+
+
+def _load_budget() -> float | None:
+    config_path = Path.home() / ".openflux" / "config.json"
+    if not config_path.exists():
+        return None
+    try:
+        config = json.loads(config_path.read_text())
+        return float(config.get("daily_budget", 0)) or None
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+def _print_budget(b: object) -> None:
+    from openflux.insights import BudgetStatus
+
+    s: BudgetStatus = b  # type: ignore[assignment]
+    print("Budget Status")
+    print("\u2550" * 40)
+    print(f"  Daily budget:   ${s.daily_budget:,.2f}")
+    print(f"  Spent today:    ${s.spent_today:,.2f}")
+    print(f"  Remaining:      ${s.remaining_today:,.2f}")
+    print()
+
+    # Progress bar
+    width = 30
+    filled = min(width, int(s.pct_used / 100 * width))
+    bar = "\u2588" * filled + "\u2591" * (width - filled)
+    status = "\u2713 on track" if s.on_track else "\u2717 over budget"
+    print(f"  [{bar}] {s.pct_used:.0f}% {status}")
+
+    if s.projected_eod > 0:
+        print(f"\n  Projected EOD:  ${s.projected_eod:,.2f}")
+        if s.projected_eod > s.daily_budget:
+            over = s.projected_eod - s.daily_budget
+            print(f"  At this rate, you'll exceed budget by ${over:,.2f}")
+
+    print(f"  Sessions today: {s.sessions_today}")
+
+
+# ── anomalies ─────────────────────────────────────────────────────────
+
+
+def cmd_anomalies(args: argparse.Namespace) -> None:
+    from openflux.insights import detect_anomalies
+
+    sink = _get_sink()
+    try:
+        anomalies = detect_anomalies(
+            sink.conn, days=args.days, agent=args.agent or None
+        )
+    finally:
+        sink.close()
+
+    if not anomalies:
+        print(f"No anomalies detected in the last {args.days} days.")
+        return
+
+    print(f"Cost anomalies: last {args.days} days")
+    print("\u2550" * 65)
+
+    # Group by type
+    by_type: dict[str, list[Any]] = {}
+    for a in anomalies:
+        by_type.setdefault(a.type, []).append(a)
+
+    type_labels = {
+        "cost_spike": "Cost Spikes",
+        "cache_miss": "Cache Misses",
+        "error_storm": "Error Storms",
+        "loop": "Agent Loops",
+    }
+
+    for atype, label in type_labels.items():
+        items = by_type.get(atype, [])
+        if not items:
+            continue
+        print(f"\n  {label} ({len(items)}):")
+        print("  " + "\u2500" * 63)
+        for a in items[:5]:
+            severity = "\u26a0" if a.severity == "warning" else "\u2717"
+            print(f"    {severity} {a.trace_id}  ${a.cost:>6.2f}  {a.description}")
+
+    total_waste = sum(a.cost for a in anomalies)
+    print(f"\n  {len(anomalies)} anomalies, ${total_waste:,.2f} potentially wasted")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="openflux",
@@ -746,6 +1056,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--port", type=int, default=5173, help="Port (default: 5173)")
     p_serve.add_argument("--db", help="Path to SQLite database")
     p_serve.set_defaults(func=cmd_serve)
+
+    p_sessions = subs.add_parser("sessions", help="Per-session cost breakdown")
+    p_sessions.add_argument(
+        "--days", type=int, default=7, help="Lookback window (default: 7)"
+    )
+    p_sessions.add_argument("--agent", help="Filter by agent name")
+    p_sessions.add_argument(
+        "--limit", type=int, default=20, help="Max results (default: 20)"
+    )
+    p_sessions.add_argument(
+        "--sort",
+        choices=["cost", "cache", "time"],
+        default="cost",
+        help="Sort order (default: cost)",
+    )
+    p_sessions.set_defaults(func=cmd_sessions)
+
+    p_budget = subs.add_parser("budget", help="Budget tracking")
+    budget_subs = p_budget.add_subparsers(dest="budget_command")
+    budget_check = budget_subs.add_parser("check", help="Check today's budget status")
+    budget_check.set_defaults(func=cmd_budget)
+    budget_set = budget_subs.add_parser("set", help="Set daily budget cap")
+    budget_set.add_argument("amount", type=float, help="Daily budget in USD")
+    budget_set.set_defaults(func=cmd_budget)
+    p_budget.set_defaults(func=cmd_budget, budget_command=None)
+
+    p_anomalies = subs.add_parser("anomalies", help="Detect cost anomalies")
+    p_anomalies.add_argument(
+        "--days", type=int, default=7, help="Lookback window (default: 7)"
+    )
+    p_anomalies.add_argument("--agent", help="Filter by agent name")
+    p_anomalies.set_defaults(func=cmd_anomalies)
+
+    p_backfill = subs.add_parser(
+        "backfill", help="Import historical Claude Code transcripts"
+    )
+    p_backfill.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-parse already-imported sessions (apply token-counting fixes)",
+    )
+    p_backfill.set_defaults(func=cmd_backfill)
 
     return parser
 

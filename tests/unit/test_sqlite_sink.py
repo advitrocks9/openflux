@@ -509,6 +509,42 @@ END;
         assert trace.scope == "test-scope"
         sink.close()
 
+    def test_v3_collapses_cumulative_session_snapshots(self, tmp_path: Path) -> None:
+        """Pre-v3 DBs had N rows per session (one per Stop hook), each cumulative.
+
+        Migration must keep only the latest snapshot per (session_id, agent),
+        otherwise SUM aggregates over-count tokens by 5-10x.
+        """
+        db = tmp_path / "legacy.db"
+        # Create a v2 DB containing 3 cumulative snapshots of one session
+        sink = SQLiteSink(path=db)
+        sink._conn.execute("DELETE FROM schema_version WHERE version >= 3")
+        sink._conn.commit()
+        # Force-insert three pre-v3 cumulative rows for the same session
+        for trace_id, ts, in_tok, out_tok in [
+            ("trc-snap1", "2026-04-01T00:00:00Z", 100, 200),
+            ("trc-snap2", "2026-04-01T01:00:00Z", 500, 1000),
+            ("trc-snap3", "2026-04-01T02:00:00Z", 900, 1800),
+        ]:
+            sink._conn.execute(
+                "INSERT INTO traces (id, timestamp, agent, session_id, "
+                "token_input, token_output, schema_version) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (trace_id, ts, "claude-code", "ses-cumulative", in_tok, out_tok, "1.0"),
+            )
+        sink._conn.commit()
+        sink.close()
+
+        # Re-open: v3 migration runs, dedupes
+        sink = SQLiteSink(path=db)
+        rows = sink._conn.execute(
+            "SELECT id, token_input, token_output FROM traces "
+            "WHERE session_id = ? ORDER BY timestamp",
+            ("ses-cumulative",),
+        ).fetchall()
+        assert rows == [("trc-snap3", 900, 1800)]
+        sink.close()
+
     def test_v1_fts_search_works_for_new_inserts(self, tmp_path: Path) -> None:
         """New inserts after v1->v2 migration are searchable by expanded columns."""
         db = tmp_path / "v1_fts.db"
@@ -529,16 +565,48 @@ END;
 
 @pytest.mark.integration
 class TestSinkFailures:
-    def test_write_rollback_on_duplicate_id(self, sink: SQLiteSink) -> None:
-        """Duplicate trace ID should raise and not leave partial data."""
-        trace = make_trace()
-        sink.write(trace)
+    def test_write_replaces_prior_trace_for_same_session(
+        self, sink: SQLiteSink
+    ) -> None:
+        """Re-writing a session collapses to one row (Stop hook idempotency)."""
+        first = make_trace(
+            agent="claude-code",
+            session_id="sess-replay",
+            task="early snapshot",
+            token_usage=TokenUsage(input_tokens=100, output_tokens=50),
+        )
+        sink.write(first)
 
-        # Second write with same ID should fail with IntegrityError
+        second = make_trace(
+            agent="claude-code",
+            session_id="sess-replay",
+            task="final snapshot",
+            token_usage=TokenUsage(input_tokens=400, output_tokens=300),
+        )
+        sink.write(second)
+
+        # Exactly one row, holding the latest snapshot
+        count = sink._conn.execute(
+            "SELECT COUNT(*) FROM traces WHERE session_id = ?", ("sess-replay",)
+        ).fetchone()[0]
+        assert count == 1
+        row = sink._conn.execute(
+            "SELECT task, token_input, token_output FROM traces WHERE session_id = ?",
+            ("sess-replay",),
+        ).fetchone()
+        assert row == ("final snapshot", 400, 300)
+
+    def test_write_duplicate_id_for_different_session_raises(
+        self, sink: SQLiteSink
+    ) -> None:
+        """PK on id still enforces uniqueness across distinct sessions."""
+        first = make_trace(id="trc-fixed", session_id="sess-a")
+        sink.write(first)
+
+        clash = make_trace(id="trc-fixed", session_id="sess-b")
         with pytest.raises(sqlite3.IntegrityError):
-            sink.write(trace)
+            sink.write(clash)
 
-        # Only one trace should exist
         count = sink._conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
         assert count == 1
 

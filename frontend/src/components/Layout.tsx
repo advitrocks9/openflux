@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 
 interface LayoutProps {
   children: ReactNode;
-  view: "traces" | "sessions" | "stats";
-  onViewChange: (v: "traces" | "sessions" | "stats") => void;
+  view: "traces" | "sessions" | "stats" | "insights";
+  onViewChange: (v: "traces" | "sessions" | "stats" | "insights") => void;
   onToggleDark: () => void;
   isDark: boolean;
 }
@@ -39,6 +39,16 @@ const tabs = [
         <line x1="18" y1="20" x2="18" y2="10" />
         <line x1="12" y1="20" x2="12" y2="4" />
         <line x1="6" y1="20" x2="6" y2="14" />
+      </svg>
+    ),
+  },
+  {
+    key: "insights" as const,
+    label: "Insights",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="12" y1="1" x2="12" y2="23" />
+        <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
       </svg>
     ),
   },
@@ -121,7 +131,7 @@ export function Layout({
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden">{children}</main>
+      <main className="flex-1 flex flex-col overflow-hidden min-h-0">{children}</main>
     </div>
   );
 }

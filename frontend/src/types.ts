@@ -91,6 +91,76 @@ export interface TraceStats {
   files_modified_count: number;
 }
 
+// Cost intelligence types
+
+export interface ModelCost {
+  model: string;
+  cost: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  cache_hit_ratio: number;
+  session_count: number;
+}
+
+export interface DayCost {
+  date: string;
+  cost: number;
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  cache_hit_ratio: number;
+}
+
+export interface CostOverview {
+  total_sessions: number;
+  total_cost: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  cache_hit_ratio: number;
+  cost_without_cache: number;
+  cache_savings: number;
+  daily_burn_rate: number;
+  projected_monthly: number;
+  by_model: ModelCost[];
+  by_day: DayCost[];
+}
+
+export interface SessionCost {
+  trace_id: string;
+  task: string;
+  status: string;
+  model: string;
+  scope: string;
+  timestamp: string;
+  cost: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  cache_hit_ratio: number;
+  duration_ms: number;
+  turn_count: number;
+  tool_count: number;
+  error_count: number;
+}
+
+export interface CostAnomaly {
+  type: string;
+  severity: string;
+  trace_id: string;
+  description: string;
+  cost: number;
+  details: Record<string, unknown>;
+}
+
+// Outcome (session-vs-test) types
+
 export interface OutcomeTraceSummary {
   trace_id: string;
   task: string;
