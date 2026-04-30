@@ -63,6 +63,7 @@ except ImportError:
         in_r, out_r = _FALLBACK_DEFAULT
         return (input_tokens * in_r + output_tokens * out_r) / 1_000_000
 
+
 # Valid sort columns to prevent SQL injection
 _SORT_COLUMNS = frozenset(
     {
