@@ -90,3 +90,36 @@ export interface TraceStats {
   source_count: number;
   files_modified_count: number;
 }
+
+export interface OutcomeTraceSummary {
+  trace_id: string;
+  task: string;
+  model: string;
+  duration_ms: number;
+  token_input: number;
+  token_output: number;
+  token_cache_read: number;
+  token_cache_creation: number;
+}
+
+export interface Outcome {
+  session_id: string;
+  agent: string;
+  start_sha: string | null;
+  end_sha: string | null;
+  lines_added: number;
+  lines_removed: number;
+  files_changed: number;
+  tests_exit_code: number | null;
+  tests_passed: boolean | null;
+  pr_url: string | null;
+  pr_merged: boolean | null;
+  captured_at: string;
+  trace: OutcomeTraceSummary | null;
+}
+
+export interface OutcomesResponse {
+  outcomes: Outcome[];
+  limit: number;
+  count: number;
+}
