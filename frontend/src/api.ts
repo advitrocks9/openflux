@@ -4,6 +4,7 @@ import type {
   StatsResponse,
   TimelineResponse,
   TraceStats,
+  OutcomesResponse,
 } from "./types";
 
 const BASE = "/api";
@@ -48,4 +49,8 @@ export function fetchTimeline(days = 30): Promise<TimelineResponse> {
 
 export function fetchTraceStats(id: string): Promise<TraceStats> {
   return get<TraceStats>(`/traces/${id}/stats`);
+}
+
+export function fetchOutcomes(limit = 50): Promise<OutcomesResponse> {
+  return get<OutcomesResponse>(`/outcomes?limit=${limit}`);
 }

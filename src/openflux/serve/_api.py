@@ -3,11 +3,64 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from openflux.sinks.sqlite import SQLiteSink
+
+# Try to use the project's authoritative pricing module if available.
+# Falls back to a minimal table if it isn't on this branch yet (the
+# parallel cost-intelligence WIP introduces openflux._pricing). When
+# branches merge, this conditional collapses to the import path.
+try:
+    from openflux._pricing import estimate_cost as _estimate_cost  # type: ignore[import-not-found,no-redef]  # noqa: I001  # pyright: ignore[reportMissingImports, reportUnknownVariableType]
+except ImportError:
+    _FALLBACK_RATES: list[tuple[str, float, float]] = [
+        ("opus", 15.00, 75.00),
+        ("sonnet", 3.00, 15.00),
+        ("haiku", 0.25, 1.25),
+        ("claude-", 3.00, 15.00),
+        ("gpt-4o-mini", 0.15, 0.60),
+        ("gpt-4o", 2.50, 10.00),
+        ("o3", 10.00, 40.00),
+        ("o1", 15.00, 60.00),
+        ("gemini", 0.075, 0.30),
+    ]
+    _FALLBACK_DEFAULT = (1.00, 3.00)
+
+    def _estimate_cost(  # type: ignore[no-redef]
+        model: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+    ) -> float:
+        # Read env override once per call; rare and small enough that the
+        # cost of re-parsing isn't worth caching.
+        override = os.environ.get("OPENFLUX_RATES_JSON")
+        if override:
+            try:
+                rates = json.loads(override)
+                rate = rates.get(model.lower())
+                if rate and len(rate) >= 2:
+                    in_r, out_r = float(rate[0]), float(rate[1])
+                    return (input_tokens * in_r + output_tokens * out_r) / 1_000_000
+            except (ValueError, TypeError):
+                pass
+
+        model_lower = model.lower()
+        for prefix, in_r, out_r in _FALLBACK_RATES:
+            if prefix in model_lower:
+                # Cache tokens at half the input rate as a rough approximation.
+                cache_blended = (cache_read_tokens + cache_creation_tokens) * in_r * 0.5
+                return (
+                    input_tokens * in_r + output_tokens * out_r + cache_blended
+                ) / 1_000_000
+        in_r, out_r = _FALLBACK_DEFAULT
+        return (input_tokens * in_r + output_tokens * out_r) / 1_000_000
+
 
 # Valid sort columns to prevent SQL injection
 _SORT_COLUMNS = frozenset(
@@ -41,6 +94,13 @@ def handle_request(path: str, sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
     if clean_path.startswith("/api/traces/"):
         trace_id = clean_path[len("/api/traces/") :]
         return _handle_trace_detail(trace_id, sink)
+    if clean_path == "/api/outcomes":
+        return _handle_outcomes_list(qs, sink)
+    if clean_path.startswith("/api/outcomes/"):
+        # Path: /api/outcomes/<session_id>?agent=<agent>
+        session_id = clean_path[len("/api/outcomes/") :]
+        agent = _qs_str(qs, "agent") or "claude-code"
+        return _handle_outcome_detail(session_id, agent, sink)
 
     return 404, {"error": "Not found"}
 
@@ -244,6 +304,59 @@ def _handle_stats(sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
         "statuses": statuses,
         "latest_timestamp": row[3] if row else None,
     }
+
+
+def _handle_outcomes_list(
+    qs: dict[str, list[str]], sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    limit = min(_qs_int(qs, "limit", 50), 500)
+    rows = sink.list_outcomes(limit=limit)
+    enriched = [_attach_trace_summary(row, sink.conn) for row in rows]
+    return 200, {"outcomes": enriched, "limit": limit, "count": len(enriched)}
+
+
+def _handle_outcome_detail(
+    session_id: str, agent: str, sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    outcome = sink.get_outcome(session_id, agent)
+    if outcome is None:
+        return 404, {"error": f"Outcome '{session_id}/{agent}' not found"}
+    return 200, _attach_trace_summary(outcome, sink.conn)
+
+
+def _attach_trace_summary(
+    outcome: dict[str, Any], conn: sqlite3.Connection
+) -> dict[str, Any]:
+    """Join an outcome with its session's trace token totals + cost basis."""
+    row = conn.execute(
+        "SELECT id, task, model, duration_ms, "
+        "COALESCE(token_input, 0), COALESCE(token_output, 0), "
+        "COALESCE(token_cache_read, 0), COALESCE(token_cache_creation, 0) "
+        "FROM traces WHERE session_id = ? AND agent = ? "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (outcome["session_id"], outcome["agent"]),
+    ).fetchone()
+    trace_summary: dict[str, Any] | None = None
+    if row:
+        cost_usd = _estimate_cost(
+            model=row[2] or "",
+            input_tokens=row[4],
+            output_tokens=row[5],
+            cache_read_tokens=row[6],
+            cache_creation_tokens=row[7],
+        )
+        trace_summary = {
+            "trace_id": row[0],
+            "task": row[1],
+            "model": row[2],
+            "duration_ms": row[3],
+            "token_input": row[4],
+            "token_output": row[5],
+            "token_cache_read": row[6],
+            "token_cache_creation": row[7],
+            "cost_usd": round(cost_usd, 4),
+        }
+    return {**outcome, "trace": trace_summary}
 
 
 def _handle_timeline(

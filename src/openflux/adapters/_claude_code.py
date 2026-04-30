@@ -20,6 +20,7 @@ from openflux._util import (
     truncate_content,
     utc_now,
 )
+from openflux.outcomes import capture_outcome, head_sha
 from openflux.schema import (
     ContextRecord,
     ContextType,
@@ -77,6 +78,7 @@ class SessionMeta:
     permission_mode: str = ""
     started_at: str = ""
     model: str = ""
+    start_sha: str | None = None
 
 
 def _lock_file(f: Any) -> None:
@@ -423,12 +425,14 @@ def handle_session_start(data: dict[str, Any]) -> None:
     session_id = data.get("session_id", generate_session_id())
     _ensure_dir()
 
+    cwd = data.get("cwd", "")
     meta = SessionMeta(
         session_id=session_id,
-        cwd=data.get("cwd", ""),
+        cwd=cwd,
         permission_mode=data.get("permission_mode", ""),
         started_at=utc_now(),
         model=data.get("model", ""),
+        start_sha=head_sha(cwd) if cwd else None,
     )
 
     meta_path = _meta_path(session_id)
@@ -537,7 +541,44 @@ def handle_session_end(data: dict[str, Any]) -> None:
 
     trace = _build_trace(events, meta, data)
     _write_to_sinks(trace)
+    _record_outcome_if_possible(meta)
     _cleanup(session_id)
+
+
+def _record_outcome_if_possible(meta: SessionMeta) -> None:
+    if not meta.cwd or not meta.start_sha:
+        return
+    test_cmd = os.environ.get("OPENFLUX_TEST_CMD") or None
+    fields = capture_outcome(
+        repo_dir=meta.cwd,
+        start_sha=meta.start_sha,
+        test_cmd=test_cmd,
+    )
+    try:
+        from openflux.sinks.sqlite import SQLiteSink
+
+        sink = SQLiteSink()
+        try:
+            sink.record_outcome(
+                session_id=meta.session_id,
+                agent="claude-code",
+                captured_at=utc_now(),
+                start_sha=fields["start_sha"],
+                end_sha=fields["end_sha"],
+                lines_added=fields["lines_added"],
+                lines_removed=fields["lines_removed"],
+                files_changed=fields["files_changed"],
+                tests_exit_code=fields["tests_exit_code"],
+                tests_passed=fields["tests_passed"],
+            )
+        finally:
+            sink.close()
+    except Exception:
+        logger.warning(
+            "Failed to record outcome for session %s",
+            meta.session_id,
+            exc_info=True,
+        )
 
 
 _TAG_RULES: dict[str, frozenset[str]] = {
