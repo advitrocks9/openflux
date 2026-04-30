@@ -5,7 +5,7 @@
 </p>
 <h1 align="center">OpenFlux</h1>
 <p align="center">
-  <em>See what your AI coding sessions actually cost <strong>and</strong> what they actually shipped.</em>
+  <em>Find out where your Claude Code budget actually went this week.</em>
 </p>
 <p align="center">
   <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/v/openflux?style=flat-square&color=6366f1" alt="PyPI"></a>
@@ -14,220 +14,130 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-a5b4fc?style=flat-square" alt="MIT"></a>
 </p>
 
-## The question
+## The problem
 
-You ran a 45-minute Claude Code session. It cost $32 in tokens. **Did any of that ship working code?**
+Existing trackers say "you spent $200 this week." They don't say:
 
-Existing tools tell you what you spent. None tell you whether the spend produced anything that survived `pytest`. OpenFlux does.
+- which sessions cost the most and why
+- how much of your input went to cache misses you paid full price for
+- whether you're stuck in a loop calling the same tool with the same input
+- whether you'll cross your daily budget at the rate you're going
 
-```
-$ openflux serve
-```
-
-The **Sessions** tab links every session to its git diff and test result:
-
-| When | Outcome | Cost | Lines | Files | Tests | Diff | Task |
-|---|---|---|---|---|---|---|---|
-| 2026-04-29 14:22 | shipped | $4.18 | +127 / -34 | 6 | ✓ pass | a3f2c1e → 8b4d9f0 | refactor auth middleware |
-| 2026-04-29 12:08 | broke tests | $11.40 | +89 / -12 | 4 | ✗ fail | 8b4d9f0 → c1e2a3f | add user roles |
-| 2026-04-29 10:55 | no diff | $2.06 | 0 / 0 | 0 | — | 71d5fa8 → 71d5fa8 | debug login flow |
-
-Cost is computed server-side from per-model rates (Sonnet/Opus/Haiku/GPT-4o/Gemini). Set `OPENFLUX_TEST_CMD="pytest -q"` to populate the tests column.
-
-## How it works
-
-OpenFlux hooks into your AI coding tool (Claude Code today; Cursor and aider planned), records the session, captures `git rev-parse HEAD` at start and end, runs your test command if you set `OPENFLUX_TEST_CMD`, and stores everything locally in SQLite. No data leaves your machine.
-
-```
-Adapter (framework-specific) -> Normalizer -> Trace -> Sink(s)
-                                                |
-                                                +-> outcome (git diff + tests) per session
-```
-
-- **Adapters** hook into framework callbacks and emit raw events
-- **Normalizer** classifies events, hashes content, applies fidelity controls
-- **Trace** is the universal schema (22 fields + 4 nested record types)
-- **Outcome** is the per-session diff + test result, joined to the trace by session_id
-- **Sinks** write the data somewhere: SQLite (default), OTLP, or JSON stdout
-
-Zero dependencies beyond Python stdlib for the core. Each framework adapter adds one optional dep.
-
-## Dashboard
-
-OpenFlux ships with a built-in web dashboard. Run `openflux serve` and open your browser.
-
-The dashboard has three tabs:
-
-- **Sessions** — outcomes view (the headline). Cost, lines added, lines removed, files, tests passed, diff range, original task. Built for the question *"did this session ship working code?"*
-- **Traces** — the raw trace explorer with sortable columns, full-text search, agent filtering.
-- **Stats** — token usage over time, traces per day, aggregate metrics.
-
-A fourth Insights tab (cost anomalies, cache-hit ratio, daily burn) is on the roadmap.
-
-<p align="center">
-  <img src="assets/screenshots/sessions-dark.png" width="100%" alt="Sessions: did this session ship working code?">
-</p>
-
-**Sessions tab** — every Claude Code session, ranked by recency. The `OUTCOME` column says `SHIPPED` or `BROKE TESTS` based on the test command result; `COST` is computed from per-model rates; `LINES` is the git diff against the start sha; `DIFF` shows `start_sha → end_sha`. Set `OPENFLUX_TEST_CMD="pytest -q"` (or your own) to populate the tests column.
-
-<p align="center">
-  <img src="assets/screenshots/traces-dark.png" width="100%" alt="Trace Explorer">
-</p>
-
-**Trace Explorer** with sortable columns, status filters, full-text search, and agent filtering. Click any row to open the detail panel.
-
-<p align="center">
-  <img src="assets/screenshots/detail-dark.png" width="100%" alt="Trace Detail">
-</p>
-
-**Trace Detail** panel with tabs for overview, tools, sources, and raw JSON. Collapsible sections, metadata grid, and cost estimation.
-
-<p align="center">
-  <img src="assets/screenshots/stats-dark.png" width="100%" alt="Stats Dashboard">
-</p>
-
-**Stats Dashboard** with token usage over time, traces per day, and aggregate metrics. Light mode also supported:
-
-<p align="center">
-  <img src="assets/screenshots/traces-light.png" width="100%" alt="Light Mode">
-</p>
+If you've ever hit your weekly limit while a tracker said you were at 10%, that's why. OpenFlux runs locally, hooks into your Claude Code sessions, and gives you the breakdown.
 
 ## Install
 
 ```bash
 pip install openflux
-
-# With a specific adapter
-pip install openflux[openai]
-pip install openflux[langchain]
-pip install openflux[bedrock]
-
-# Everything
-pip install openflux[all]
-```
-
-## Quick start
-
-### Claude Code (the wedge)
-
-```bash
-pip install openflux
 openflux install claude-code
-export OPENFLUX_TEST_CMD="pytest -q"   # optional, enables tests_passed column
 ```
 
-Every Claude Code session is now traced. Every session in a git repo gets a recorded outcome (start sha, end sha, lines added/removed, files changed, optional test result). Visit `openflux serve` and click **Sessions** to see them.
-
-### OpenAI Agents SDK
-
-```python
-from agents.tracing import add_trace_processor
-from openflux.adapters.openai_agents import OpenFluxProcessor
-
-add_trace_processor(OpenFluxProcessor(agent="my-agent"))
-```
-
-### LangChain
-
-```python
-import openflux
-
-handler = openflux.langchain_handler(agent="my-rag-app")
-result = chain.invoke({"input": "..."}, config={"callbacks": [handler]})
-```
-
-### Any framework
-
-```python
-import openflux
-
-collector = openflux.init(agent="my-agent")
-
-collector.record_event("session-1", {"type": "meta", "task": "fix auth bug", "model": "gpt-4o"})
-collector.record_event("session-1", {"type": "tool", "tool_name": "Bash", "tool_input": "pytest", "tool_output": "3 passed"})
-collector.record_event("session-1", {"type": "search", "query": "oauth best practices", "engine": "web"})
-
-trace = collector.flush("session-1")
-```
-
-## CLI
-
-OpenFlux includes a full CLI for querying, analyzing, and serving your traces.
+The `install` command writes lifecycle hooks into `~/.claude/settings.json`, idempotent on re-run. From then on every Claude Code session is captured to `~/.openflux/traces.db`. No data leaves your machine.
 
 ```bash
+openflux serve         # dashboard at http://localhost:5173
+openflux cost          # CLI: total spend, cache hit ratio, burn rate
+openflux sessions      # CLI: per-session cost, sortable by cost / cache / time
+openflux anomalies     # CLI: spikes, cache misses, error storms, agent loops
+openflux budget set 10 # daily cap, $/day; check with `openflux budget check`
+```
+
+## Cost forensics
+
+<p align="center">
+  <img src="assets/screenshots/insights-dark.png" width="100%" alt="Waste tab: cost forensics">
+</p>
+
+The **Waste** tab in the dashboard answers the questions ccusage and CodeBurn don't:
+
+- **Cache discipline.** Cache hit ratio per session and per model. The dashboard shows what you would have paid without caching so you can see the savings (or the lack of them) in dollars.
+- **Burn rate.** Daily spend over a window, projected to month-end at the current rate.
+- **Per-session cost.** Sortable by cost, by cache hit ratio, or by time. Useful for finding the one session that cost more than the other ten put together.
+- **Anomaly detection.** Four classes, each tied to a real failure mode:
+  - **Cost spikes** — sessions that cost 3x+ the rolling average.
+  - **Cache misses** — sessions with significant input tokens and zero cache hits, where a prefix invalidation made you re-pay for tokens you should have hit the cache on.
+  - **Error storms** — sessions where 50%+ of tool calls failed, so most of the spend was wasted retry traffic.
+  - **Agent loops** — same tool called 4+ times consecutively with identical input. A heuristic for "stuck."
+- **Budget cap.** Set a daily ceiling with `openflux budget set <amount>`. `openflux budget check` shows spent, remaining, percent used, and projected end-of-day spend at the current pace.
+
+The same data is exposed at `/api/insights`, `/api/insights/sessions`, and `/api/insights/anomalies` if you want to hook a notifier or alert into it.
+
+## Sessions: did this session ship working code?
+
+<p align="center">
+  <img src="assets/screenshots/sessions-dark.png" width="100%" alt="Sessions: did this session ship working code?">
+</p>
+
+OpenFlux also captures the git diff and test result for each Claude Code session. Set `OPENFLUX_TEST_CMD="pytest -q"` (or your own command) and every session shows pass / fail next to the cost. The **Sessions** tab in the dashboard ranks rows by recency. Columns: outcome, cost, lines added/removed, files changed, tests, diff range, original task.
+
+```bash
+openflux outcomes              # CLI version of the Sessions tab
+openflux outcomes --days 7
+```
+
+## How it works
+
+```
+Claude Code hooks --> OpenFlux adapter --> SQLite (~/.openflux/traces.db)
+                                            |
+                                            +-> dashboard (openflux serve)
+                                            +-> CLI (openflux cost / sessions / anomalies / budget / outcomes)
+                                            +-> JSON or OTLP sinks (optional)
+```
+
+Captured per session: model, every tool call, token usage by message (input / output / cache-read / cache-creation), MCP tool registrations, files modified, git diff at start and end, test command exit code if `OPENFLUX_TEST_CMD` is set. SQLite with FTS5 for search; schema migrations are versioned and idempotent.
+
+For Claude Code, cost is computed from `billable_messages` (deduplicated by Anthropic `message.id` so the same API call across resumed or forked transcripts is counted once). For other adapters it falls back to per-trace token aggregates.
+
+## Other dashboard tabs
+
+`openflux serve` also gives you:
+
+- **Traces** — sortable raw trace explorer, status / agent filters, full-text search via FTS5, click-through detail panel with overview / tools / sources / raw JSON tabs.
+- **Stats** — token usage over time, traces per day, aggregate metrics. Light and dark mode.
+
+## CLI reference
+
+```bash
+# Cost forensics
+openflux cost                            # spend total + cache + burn (last 7 days)
+openflux cost --days 30
+openflux sessions                        # per-session cost, most expensive first
+openflux sessions --sort cache           # or sort by cache hit ratio
+openflux anomalies                       # cost spikes, cache misses, error storms, loops
+openflux budget set 10                   # set daily cap to $10/day
+openflux budget check                    # status + EOD projection
+
+# Outcomes
+openflux outcomes                        # session-vs-test view (CLI)
+openflux outcomes --days 7
+
+# Trace explorer
 openflux recent                          # last 10 traces
-openflux recent --agent claude-code      # filter by agent
-openflux search "staging deploy"         # full-text search
-openflux trace trc-a1b2c3d4e5f6          # full detail for one trace
-openflux cost                            # token usage + cost breakdown
-openflux cost --days 7 --agent my-agent  # scoped cost report
-openflux export > traces.json            # dump as NDJSON
-openflux status                          # db path, counts, breakdown
-openflux serve                           # launch web dashboard on :5173
-openflux serve --port 8080               # custom port
-openflux forget --agent old-agent        # delete traces by agent
-openflux prune --days 90                 # remove traces older than 90 days
-openflux install claude-code             # auto-configure hooks
-openflux install --list                  # show available adapters
+openflux recent --agent claude-code
+openflux search "deploy script"          # full-text across captured content
+openflux trace trc-a1b2c3d4e5f6          # one trace, full detail
+
+# Plumbing
+openflux serve                           # web dashboard
+openflux install claude-code             # write lifecycle hooks
+openflux install --list                  # other supported frameworks
+openflux export > traces.json            # NDJSON dump
+openflux backfill                        # import historical Claude Code transcripts
+openflux forget --agent old-agent        # delete by agent
+openflux prune --days 90                 # delete by age
+openflux status                          # db path + counts
 ```
 
-### `openflux cost`
+## Other frameworks
 
-Shows token usage and estimated cost broken down by model, agent, and day:
-
-```
-$ openflux cost --days 7
-Token Usage (last 7 days)
-─────────────────────────────────────────────
-  Traces:     42
-  Input:       1,234,567 tokens
-  Output:        456,789 tokens
-  Total:       1,691,356 tokens
-
-By model:
-  claude-sonnet-4-20250514           980,000 tokens  $7.35
-  gpt-4o-2024-11-20                  711,356 tokens  $4.28
-
-By agent:
-  claude-code                          28 traces    1,200,000 tokens
-  my-rag-app                           14 traces      491,356 tokens
-```
-
-### `openflux serve`
-
-Launches a local web dashboard with:
-
-- **Trace table** with sorting, pagination, status/agent filtering, full-text search
-- **Detail panel** with tabbed view (overview, tools, sources, raw JSON)
-- **Stats page** with token usage charts, trace counts, cost estimates
-- **Command palette** (Cmd+K) for quick navigation
-- **Dark/light mode** toggle
-
-The dashboard is built with React, Tailwind CSS, and Recharts, bundled into the Python package. No Node.js required to run it.
+Claude Code is the wedge. The Trace schema is framework-agnostic and OpenFlux ships adapters for the rest of the agent ecosystem (OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, AutoGen, CrewAI, Google ADK, Amazon Bedrock, MCP) so the same dashboard, sinks, and CLI work everywhere. Coverage table and per-framework setup live in [docs/adapters.md](docs/adapters.md).
 
 ## Compared to other Claude Code tools
 
-The space already has [ccusage](https://github.com/ryoppippi/ccusage) (cost reporting) and [CodeBurn](https://github.com/getagentseal/codeburn) (per-tool waste grading). OpenFlux is the only one that links a session to its git diff and test result.
+The space already has [ccusage](https://github.com/ryoppippi/ccusage) (cost reporting) and [CodeBurn](https://github.com/getagentseal/codeburn) (per-tool waste grading). OpenFlux overlaps both but adds the per-session cache discipline view, the four-class anomaly detector, the daily budget cap with EOD projection, and the diff-vs-test outcome link.
 
-See [docs/comparison.md](docs/comparison.md) for the side-by-side, including when NOT to pick OpenFlux.
-
-## Works with
-
-The outcome view today targets Claude Code (where the wedge is sharpest). The underlying Trace schema is framework-agnostic and ships adapters for the rest of the agent ecosystem so the same dashboard, sinks, and CLI work everywhere.
-
-Tested with real API calls and simulated event streams. Coverage = percentage of the 22 Trace fields populated in a real test.
-
-| Adapter | Coverage | What's N/A | Install |
-|---------|----------|------------|---------|
-| MCP | 22/22 (100%) | -- | `openflux[mcp]` |
-| Amazon Bedrock | 21/22 (100%) | files_modified | `openflux[bedrock]` |
-| OpenAI Agents SDK | 21/21 (100%) | correction | `openflux[openai]` |
-| Claude Code | 21/22 (95%) | parent_id | `(stdlib)` |
-| LangChain | 20/20 (100%) | correction, parent_id | `openflux[langchain]` |
-| Claude Agent SDK | 19/19 (100%) | parent_id, correction, files_modified | `openflux[claude-agent-sdk]` |
-| Google ADK | 18/18 (100%) | parent_id, correction, files_modified, searches | `openflux[google-adk]` |
-| AutoGen v0.4 | 16/16 (100%) | parent_id, correction, searches, sources_read, tools_used, files_modified | `openflux[autogen]` |
-| CrewAI | 17/18 (94%) | parent_id, correction, files_modified, token_usage | `openflux[crewai]` |
+See [docs/comparison.md](docs/comparison.md) for the side-by-side, including when not to pick OpenFlux.
 
 ## Configuration
 
@@ -263,18 +173,14 @@ Full schema definition in [docs/schema.md](docs/schema.md).
 
 ## Roadmap
 
-- [ ] PyPI stable release (v1.0)
+- [ ] Mid-session budget alerts via PostToolUse hook (notify when crossing a $/session ceiling, before the session ends)
+- [ ] Per-tool / per-MCP-server / per-subagent cost attribution within a session
+- [ ] Week-over-week diff view (compare two date ranges to spot regressions)
 - [ ] Cursor + aider adapters with the same outcome capture
 - [ ] PR-merged correlation (mark sessions whose diff was merged in the public history)
-- [ ] Per-model cost rate config (currently Sonnet-class blended estimate)
-- [ ] Cost alerting (threshold-based notifications)
-- [ ] Trace comparison and diff view
-- [ ] OTLP sink integration tests
-- [ ] Grafana dashboard template
-- [x] ~~OpenAI / AutoGen / CrewAI real API coverage tests~~ (done in v0.3.0)
 - [ ] Webhook sink (POST traces to any URL)
-- [ ] Trace retention policies (auto-prune by age/size)
-- [ ] Multi-user auth for served dashboard
+- [ ] Trace retention policies (auto-prune by age or DB size)
+- [ ] Multi-machine sync of `traces.db`
 
 ## Development
 
