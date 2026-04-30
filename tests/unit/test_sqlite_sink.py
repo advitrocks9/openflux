@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -188,23 +189,18 @@ class TestFKCascade:
 @pytest.mark.integration
 class TestSourcesSummary:
     def test_most_accessed_first(self, sink: SQLiteSink) -> None:
+        # Anchor to now so the test does not rot once the original date
+        # falls outside the days=30 window.
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for _ in range(3):
             sink.write(
                 make_trace(
-                    sources_read=[
-                        make_source_record(
-                            path="/hot_file.py", timestamp="2026-03-20T00:00:00Z"
-                        )
-                    ]
+                    sources_read=[make_source_record(path="/hot_file.py", timestamp=ts)]
                 )
             )
         sink.write(
             make_trace(
-                sources_read=[
-                    make_source_record(
-                        path="/cold_file.py", timestamp="2026-03-20T00:00:00Z"
-                    )
-                ]
+                sources_read=[make_source_record(path="/cold_file.py", timestamp=ts)]
             )
         )
         summary = sink.sources_summary(days=30)
