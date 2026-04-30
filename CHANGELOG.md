@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1 (2026-04-30)
+
+### Added
+- Backfill from JSONL transcripts now reconstructs per-tool detail (`tools_used`, `searches`, `sources_read`, `files_modified`) by walking `tool_use` and `tool_result` content blocks and running them through the same classifier the live `PostToolUse` hook uses. As a result, the `loop` and `error_storm` anomaly classes now fire on backfilled databases instead of silently no-op-ing. On a real 2,939-trace database, refresh imported 55,948 tool records / 60,670 sources / 5,452 searches and surfaced 4 error storms and 252 agent loops that v0.5.0 missed.
+- `SessionCost.uncached_input_cost`: dollars paid at the full input rate per session. The actionable "cache pain" metric; doesn't saturate the way `cache_hit_ratio` does. Surfaced in `openflux sessions` (alongside total cost) and `--sort cache` now means "highest uncached input cost first".
+- `has_tool_coverage(conn, days, agent)` helper. `openflux anomalies` prints an explanation banner when the window's traces have no tool coverage instead of silently returning empty.
+
+### Bug fixes
+- `session_costs` no longer crashes when `trace_tools` is empty for a trace. SQLite's `SUM` over zero rows returns NULL; both `tool_count` and `error_count` are now guarded with `or 0` so `SessionCost` always carries valid `int` fields.
+- Transcript task extraction stopped corrupting prompts that contain angle brackets. The tag stripper is now whitelisted to known Claude Code wrapper tags (`local-command-caveat`, `system-reminder`, `command-name`, etc); legitimate prompts like `"Fix <select> handling"` survive unchanged.
+- Slash-command transcripts now resolve to the user's intent rather than the transport. A session opening `<command-name>/build</command-name>` followed by a substantive prompt sets `task` to the prompt; the slash command name is captured only as a last-resort fallback when no later user message has substantive content.
+
+### Changed
+- `openflux cost` leads with cache savings dollars instead of the saturated cache hit ratio. The ratio is kept as a softer line with a value-dependent note (`>=95%` healthy, `70-95%` below typical, `<70%` discipline broken).
+- README's Cost forensics section rewritten to match shipped behavior (cache savings as the headline; uncached input cost as the actionable cache-pain metric; all four anomaly classes now backed by real data on backfill).
+
 ## 0.5.0 (2026-04-30)
 
 ### Added

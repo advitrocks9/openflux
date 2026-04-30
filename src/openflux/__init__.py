@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from openflux.adapters.langchain import OpenFluxCallbackHandler
     from openflux.sinks.base import Sink
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "SCHEMA_VERSION",
