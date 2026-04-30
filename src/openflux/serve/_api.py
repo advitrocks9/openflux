@@ -41,6 +41,13 @@ def handle_request(path: str, sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
     if clean_path.startswith("/api/traces/"):
         trace_id = clean_path[len("/api/traces/") :]
         return _handle_trace_detail(trace_id, sink)
+    if clean_path == "/api/outcomes":
+        return _handle_outcomes_list(qs, sink)
+    if clean_path.startswith("/api/outcomes/"):
+        # Path: /api/outcomes/<session_id>?agent=<agent>
+        session_id = clean_path[len("/api/outcomes/") :]
+        agent = _qs_str(qs, "agent") or "claude-code"
+        return _handle_outcome_detail(session_id, agent, sink)
 
     return 404, {"error": "Not found"}
 
@@ -244,6 +251,51 @@ def _handle_stats(sink: SQLiteSink) -> tuple[int, dict[str, Any]]:
         "statuses": statuses,
         "latest_timestamp": row[3] if row else None,
     }
+
+
+def _handle_outcomes_list(
+    qs: dict[str, list[str]], sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    limit = min(_qs_int(qs, "limit", 50), 500)
+    rows = sink.list_outcomes(limit=limit)
+    enriched = [_attach_trace_summary(row, sink.conn) for row in rows]
+    return 200, {"outcomes": enriched, "limit": limit, "count": len(enriched)}
+
+
+def _handle_outcome_detail(
+    session_id: str, agent: str, sink: SQLiteSink
+) -> tuple[int, dict[str, Any]]:
+    outcome = sink.get_outcome(session_id, agent)
+    if outcome is None:
+        return 404, {"error": f"Outcome '{session_id}/{agent}' not found"}
+    return 200, _attach_trace_summary(outcome, sink.conn)
+
+
+def _attach_trace_summary(
+    outcome: dict[str, Any], conn: sqlite3.Connection
+) -> dict[str, Any]:
+    """Join an outcome with its session's trace token totals + cost basis."""
+    row = conn.execute(
+        "SELECT id, task, model, duration_ms, "
+        "COALESCE(token_input, 0), COALESCE(token_output, 0), "
+        "COALESCE(token_cache_read, 0), COALESCE(token_cache_creation, 0) "
+        "FROM traces WHERE session_id = ? AND agent = ? "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (outcome["session_id"], outcome["agent"]),
+    ).fetchone()
+    trace_summary: dict[str, Any] | None = None
+    if row:
+        trace_summary = {
+            "trace_id": row[0],
+            "task": row[1],
+            "model": row[2],
+            "duration_ms": row[3],
+            "token_input": row[4],
+            "token_output": row[5],
+            "token_cache_read": row[6],
+            "token_cache_creation": row[7],
+        }
+    return {**outcome, "trace": trace_summary}
 
 
 def _handle_timeline(
