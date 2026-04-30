@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 
 interface LayoutProps {
   children: ReactNode;
-  view: "traces" | "stats" | "insights";
-  onViewChange: (v: "traces" | "stats" | "insights") => void;
+  view: "traces" | "sessions" | "stats" | "insights";
+  onViewChange: (v: "traces" | "sessions" | "stats" | "insights") => void;
   onToggleDark: () => void;
   isDark: boolean;
 }
@@ -18,6 +18,16 @@ const tabs = [
         <polyline points="14 2 14 8 20 8" />
         <line x1="16" y1="13" x2="8" y2="13" />
         <line x1="16" y1="17" x2="8" y2="17" />
+      </svg>
+    ),
+  },
+  {
+    key: "sessions" as const,
+    label: "Sessions",
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+        <polyline points="22 4 12 14.01 9 11.01" />
       </svg>
     ),
   },

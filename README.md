@@ -5,7 +5,7 @@
 </p>
 <h1 align="center">OpenFlux</h1>
 <p align="center">
-  <em>Open standard for AI agent telemetry. One schema across every framework.</em>
+  <em>See what your AI coding sessions actually cost <strong>and</strong> what they actually shipped.</em>
 </p>
 <p align="center">
   <a href="https://pypi.org/project/openflux/"><img src="https://img.shields.io/pypi/v/openflux?style=flat-square&color=6366f1" alt="PyPI"></a>
@@ -14,30 +14,61 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-a5b4fc?style=flat-square" alt="MIT"></a>
 </p>
 
-## Why
+## The question
 
-Every agent framework emits telemetry differently. Claude Code uses lifecycle hooks. OpenAI Agents SDK has TracingProcessor. LangChain has callbacks. If you want to build analytics, compliance, or cost tooling on top, you need N integrations from scratch.
+You ran a 45-minute Claude Code session. It cost $32 in tokens. **Did any of that ship working code?**
 
-OpenFlux normalizes everything into a single schema called a **Trace**: one traced unit of agent work, end to end. Context in, searches run, sources read, tools called, decision made.
+Existing tools tell you what you spent. None tell you whether the spend produced anything that survived `pytest`. OpenFlux does.
 
-Same idea as OpenTelemetry for observability. OTel didn't build dashboards. It built the standard that let them exist. OpenFlux does that for agent telemetry.
+```
+$ openflux serve
+```
+
+The **Sessions** tab links every session to its git diff and test result:
+
+| When | Outcome | Cost | Lines | Files | Tests | Diff | Task |
+|---|---|---|---|---|---|---|---|
+| 2026-04-29 14:22 | shipped | $4.18 | +127 / -34 | 6 | ✓ pass | a3f2c1e → 8b4d9f0 | refactor auth middleware |
+| 2026-04-29 12:08 | broke tests | $11.40 | +89 / -12 | 4 | ✗ fail | 8b4d9f0 → c1e2a3f | add user roles |
+| 2026-04-29 10:55 | no diff | $2.06 | 0 / 0 | 0 | — | 71d5fa8 → 71d5fa8 | debug login flow |
+
+Cost is computed server-side from per-model rates (Sonnet/Opus/Haiku/GPT-4o/Gemini). Set `OPENFLUX_TEST_CMD="pytest -q"` to populate the tests column.
 
 ## How it works
 
+OpenFlux hooks into your AI coding tool (Claude Code today; Cursor and aider planned), records the session, captures `git rev-parse HEAD` at start and end, runs your test command if you set `OPENFLUX_TEST_CMD`, and stores everything locally in SQLite. No data leaves your machine.
+
 ```
 Adapter (framework-specific) -> Normalizer -> Trace -> Sink(s)
+                                                |
+                                                +-> outcome (git diff + tests) per session
 ```
 
 - **Adapters** hook into framework callbacks and emit raw events
 - **Normalizer** classifies events, hashes content, applies fidelity controls
 - **Trace** is the universal schema (22 fields + 4 nested record types)
-- **Sinks** write the Trace somewhere: SQLite (default), OTLP, or JSON stdout
+- **Outcome** is the per-session diff + test result, joined to the trace by session_id
+- **Sinks** write the data somewhere: SQLite (default), OTLP, or JSON stdout
 
-Zero dependencies beyond Python stdlib for the core. Each adapter adds one optional dep.
+Zero dependencies beyond Python stdlib for the core. Each framework adapter adds one optional dep.
 
 ## Dashboard
 
 OpenFlux ships with a built-in web dashboard. Run `openflux serve` and open your browser.
+
+The dashboard has three tabs:
+
+- **Sessions** — outcomes view (the headline). Cost, lines added, lines removed, files, tests passed, diff range, original task. Built for the question *"did this session ship working code?"*
+- **Traces** — the raw trace explorer with sortable columns, full-text search, agent filtering.
+- **Stats** — token usage over time, traces per day, aggregate metrics.
+
+A fourth Insights tab (cost anomalies, cache-hit ratio, daily burn) is on the roadmap.
+
+<p align="center">
+  <img src="assets/screenshots/sessions-dark.png" width="100%" alt="Sessions: did this session ship working code?">
+</p>
+
+**Sessions tab** — every Claude Code session, ranked by recency. The `OUTCOME` column says `SHIPPED` or `BROKE TESTS` based on the test command result; `COST` is computed from per-model rates; `LINES` is the git diff against the start sha; `DIFF` shows `start_sha → end_sha`. Set `OPENFLUX_TEST_CMD="pytest -q"` (or your own) to populate the tests column.
 
 <p align="center">
   <img src="assets/screenshots/traces-dark.png" width="100%" alt="Trace Explorer">
@@ -77,15 +108,15 @@ pip install openflux[all]
 
 ## Quick start
 
-### Claude Code
-
-Auto-configures lifecycle hooks:
+### Claude Code (the wedge)
 
 ```bash
+pip install openflux
 openflux install claude-code
+export OPENFLUX_TEST_CMD="pytest -q"   # optional, enables tests_passed column
 ```
 
-Every Claude Code session is now traced automatically.
+Every Claude Code session is now traced. Every session in a git repo gets a recorded outcome (start sha, end sha, lines added/removed, files changed, optional test result). Visit `openflux serve` and click **Sessions** to see them.
 
 ### OpenAI Agents SDK
 
@@ -174,7 +205,15 @@ Launches a local web dashboard with:
 
 The dashboard is built with React, Tailwind CSS, and Recharts, bundled into the Python package. No Node.js required to run it.
 
-## Adapter coverage
+## Compared to other Claude Code tools
+
+The space already has [ccusage](https://github.com/ryoppippi/ccusage) (cost reporting) and [CodeBurn](https://github.com/getagentseal/codeburn) (per-tool waste grading). OpenFlux is the only one that links a session to its git diff and test result.
+
+See [docs/comparison.md](docs/comparison.md) for the side-by-side, including when NOT to pick OpenFlux.
+
+## Works with
+
+The outcome view today targets Claude Code (where the wedge is sharpest). The underlying Trace schema is framework-agnostic and ships adapters for the rest of the agent ecosystem so the same dashboard, sinks, and CLI work everywhere.
 
 Tested with real API calls and simulated event streams. Coverage = percentage of the 22 Trace fields populated in a real test.
 
@@ -197,6 +236,7 @@ All env vars, no config files.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENFLUX_DB_PATH` | `~/.openflux/traces.db` | SQLite database location |
+| `OPENFLUX_TEST_CMD` | unset | Shell command to run at session end. Exit 0 means `tests_passed=true`. Example: `pytest -q` |
 | `OPENFLUX_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP endpoint for export |
 | `OPENFLUX_FIDELITY` | `full` | `full` (raw content) or `redacted` (hash-only) |
 | `OPENFLUX_EXCLUDE_PATHS` | `*.env,*credentials*,...` | Glob patterns to exclude from content storage |
@@ -224,9 +264,11 @@ Full schema definition in [docs/schema.md](docs/schema.md).
 ## Roadmap
 
 - [ ] PyPI stable release (v1.0)
-- [ ] Trace comparison and diff view
-- [ ] Session timeline (group traces by session_id)
+- [ ] Cursor + aider adapters with the same outcome capture
+- [ ] PR-merged correlation (mark sessions whose diff was merged in the public history)
+- [ ] Per-model cost rate config (currently Sonnet-class blended estimate)
 - [ ] Cost alerting (threshold-based notifications)
+- [ ] Trace comparison and diff view
 - [ ] OTLP sink integration tests
 - [ ] Grafana dashboard template
 - [x] ~~OpenAI / AutoGen / CrewAI real API coverage tests~~ (done in v0.3.0)

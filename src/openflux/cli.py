@@ -615,6 +615,52 @@ def _install_claude_code() -> None:
     print("\nOpenFlux will now capture Claude Code telemetry.")
 
 
+def cmd_outcomes(args: argparse.Namespace) -> None:
+    sink = _get_sink()
+    try:
+        outcomes = sink.list_outcomes(limit=args.limit)
+    finally:
+        sink.close()
+
+    if not outcomes:
+        print(
+            "No outcomes recorded yet.\n"
+            "Sessions get outcomes when Claude Code runs in a git repo with "
+            "OpenFlux hooks installed:\n"
+            "  openflux install claude-code\n"
+            "  export OPENFLUX_TEST_CMD='pytest -q'  # optional"
+        )
+        return
+
+    rows: list[list[str]] = []
+    for o in outcomes:
+        tests = "—"
+        if o["tests_passed"] is True:
+            tests = "pass"
+        elif o["tests_passed"] is False:
+            tests = "FAIL"
+        diff = f"+{o['lines_added']}/-{o['lines_removed']}"
+        sha_range = "—"
+        if o["start_sha"] and o["end_sha"]:
+            sha_range = f"{o['start_sha'][:7]}..{o['end_sha'][:7]}"
+        rows.append(
+            [
+                _truncate(o["session_id"], 18),
+                _relative_time(o["captured_at"]),
+                diff,
+                str(o["files_changed"]),
+                tests,
+                sha_range,
+            ]
+        )
+
+    _print_table(
+        ["SESSION", "WHEN", "DIFF", "FILES", "TESTS", "SHAS"],
+        rows,
+    )
+    print(f"\n{len(outcomes)} outcome(s) shown.")
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     from openflux.serve import serve
 
@@ -996,6 +1042,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--list", action="store_true", help="List available adapters"
     )
     p_install.set_defaults(func=cmd_install)
+
+    p_outcomes = subs.add_parser(
+        "outcomes",
+        help="Show session outcomes (cost vs lines vs tests)",
+    )
+    p_outcomes.add_argument(
+        "--limit", type=int, default=20, help="Max results (default: 20)"
+    )
+    p_outcomes.set_defaults(func=cmd_outcomes)
 
     p_serve = subs.add_parser("serve", help="Start local trace explorer UI")
     p_serve.add_argument("--port", type=int, default=5173, help="Port (default: 5173)")

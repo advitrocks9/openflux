@@ -5,6 +5,7 @@ import { TraceTable } from "./components/TraceTable";
 import { TraceDetail } from "./components/TraceDetail";
 import { FilterBar } from "./components/FilterBar";
 import { StatsView } from "./components/StatsView";
+import { SessionsView } from "./components/SessionsView";
 import { WasteView } from "./components/WasteView";
 import { CommandPalette } from "./components/CommandPalette";
 import { useTraces } from "./hooks/useTraces";
@@ -12,11 +13,12 @@ import { useTrace } from "./hooks/useTrace";
 import { useStats } from "./hooks/useStats";
 import { useKeyboard } from "./hooks/useKeyboard";
 
-type View = "traces" | "stats" | "insights";
+type View = "traces" | "sessions" | "stats" | "insights";
 
 function getViewFromHash(): View {
   const h = window.location.hash;
   if (h === "#stats") return "stats";
+  if (h === "#sessions") return "sessions";
   if (h === "#insights") return "insights";
   return "traces";
 }
@@ -69,7 +71,7 @@ export function App() {
   }, []);
 
   const handleViewChange = useCallback((v: View) => {
-    window.location.hash = v === "traces" ? "#traces" : `#${v}`;
+    window.location.hash = `#${v}`;
     setView(v);
     setSelectedTraceId(null);
   }, []);
@@ -157,6 +159,8 @@ export function App() {
               )}
             </AnimatePresence>
           </div>
+        ) : view === "sessions" ? (
+          <SessionsView />
         ) : view === "stats" ? (
           <div className="overflow-auto flex-1 min-h-0">
             <StatsView

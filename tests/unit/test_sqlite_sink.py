@@ -15,7 +15,7 @@ from conftest import (
 )
 
 from openflux.schema import ContextType, TokenUsage
-from openflux.sinks.sqlite import SQLiteSink
+from openflux.sinks.sqlite import _SCHEMA_VERSION, SQLiteSink
 
 
 @pytest.fixture()
@@ -189,8 +189,8 @@ class TestFKCascade:
 @pytest.mark.integration
 class TestSourcesSummary:
     def test_most_accessed_first(self, sink: SQLiteSink) -> None:
-        # Use a current timestamp so the days=30 filter doesn't drop these rows
-        # as the calendar advances past whatever was hardcoded.
+        # Anchor to now so the test does not rot once the original date
+        # falls outside the days=30 window.
         ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         for _ in range(3):
             sink.write(
@@ -496,10 +496,10 @@ END;
         # Reopening with SQLiteSink triggers migration
         sink = SQLiteSink(path=db)
 
-        # Schema version should be at least the FTS-rebuild version (2).
+        # Schema version should match current
         row = sink._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
         assert row is not None
-        assert row[0] >= 2
+        assert row[0] == _SCHEMA_VERSION
 
         # Original trace must still be readable
         trace = sink.get(trace_id)

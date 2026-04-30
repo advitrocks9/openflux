@@ -7,6 +7,7 @@ import type {
   CostOverview,
   SessionCost,
   CostAnomaly,
+  OutcomesResponse,
 } from "./types";
 
 const BASE = "/api";
@@ -82,4 +83,8 @@ export function fetchInsightsAnomalies(
   qs.set("days", String(days));
   if (agent) qs.set("agent", agent);
   return get<{ anomalies: CostAnomaly[] }>(`/insights/anomalies?${qs.toString()}`);
+}
+
+export function fetchOutcomes(limit = 50): Promise<OutcomesResponse> {
+  return get<OutcomesResponse>(`/outcomes?limit=${limit}`);
 }
