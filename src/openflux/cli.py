@@ -12,7 +12,6 @@ from typing import Any
 
 from openflux._pricing import estimate_cost as _estimate_cost_full
 from openflux.sinks.sqlite import SQLiteSink
-from openflux.waste import EfficiencyReport, SessionReplay
 
 DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
@@ -382,78 +381,74 @@ def _print_status_tokens(conn: sqlite3.Connection) -> None:
 
 
 def cmd_cost(args: argparse.Namespace) -> None:
+    from openflux.insights import cost_overview
+
     sink = _get_sink()
     try:
-        days: int = args.days
-        agent: str | None = args.agent or None
-
-        summary = sink.token_summary(days=days, agent=agent)
-        by_model = sink.token_by_model(days=days, agent=agent)
-        by_agent = sink.token_by_agent(days=days, agent=agent)
-        by_day = sink.token_by_day(days=days, agent=agent)
+        overview = cost_overview(sink.conn, days=args.days, agent=args.agent or None)
     finally:
         sink.close()
 
-    _print_cost_header(days, summary)
-    _print_cost_by_model(by_model)
-    _print_cost_by_agent(by_agent)
-    _print_cost_by_day(by_day)
+    _print_cost_overview(overview, args.days)
 
 
-def _print_cost_header(days: int, summary: dict[str, Any]) -> None:
-    print(f"Token Usage (last {days} days)")
-    print("\u2500" * 45)
-    print(f"  Traces:     {summary['traces']:,}")
-    print(f"  Input:      {summary['input']:>12,} tokens")
-    print(f"  Output:     {summary['output']:>12,} tokens")
-    print(f"  Total:      {summary['total']:>12,} tokens")
+def _print_cost_overview(overview: object, days: int) -> None:
+    from openflux.insights import CostOverview
 
-    # Cost needs per-model breakdown to apply correct rates
-    # but we can estimate from total with a simple heuristic
-    # (the by-model section will show accurate per-model costs)
+    o: CostOverview = overview  # type: ignore[assignment]
+    print(f"Cost intelligence: last {days} days")
+    print("\u2550" * 55)
+    print()
+    print(f"  Total spend:      ${o.total_cost:,.2f}")
+    print(f"  Sessions:         {o.total_sessions:,}")
+    print(f"  Burn rate:        ${o.daily_burn_rate:,.2f}/day")
+    print(f"  Projected month:  ${o.projected_monthly:,.2f}")
 
+    # Cache efficiency: the #1 actionable metric
+    print()
+    if o.total_cache_read_tokens > 0 or o.total_cache_creation_tokens > 0:
+        print(f"  Cache hit ratio:  {o.cache_hit_ratio:.0%}")
+        print(f"  Cache savings:    ${o.cache_savings:,.2f}")
+        if o.cost_without_cache > 0:
+            pct_saved = o.cache_savings / o.cost_without_cache * 100
+            print(f"  You saved {pct_saved:.0f}% vs no caching")
+    else:
+        print("  Cache:            No cache data (check adapter config)")
 
-def _print_cost_by_model(by_model: list[dict[str, Any]]) -> None:
-    if not by_model:
-        return
-    print("\nBy model:")
-    for row in by_model:
-        total = row["input"] + row["output"]
-        cost = _estimate_cost(
-            row["model"],
-            row["input"],
-            row["output"],
-            row.get("cache_read", 0),
-            row.get("cache_creation", 0),
-        )
-        print(f"  {row['model']:30s} {total:>12,} tokens  ${cost:,.2f}")
+    # By model
+    if o.by_model:
+        print()
+        print("  By model:")
+        print("  " + "\u2500" * 53)
+        for m in o.by_model:
+            hit = m.cache_hit_ratio
+            cache_str = f"  cache: {hit:.0%}" if m.cache_read_tokens else ""
+            print(
+                f"    {m.model:<28s} ${m.cost:>7,.2f}"
+                f"  ({m.session_count} sessions){cache_str}"
+            )
 
+    # Daily breakdown
+    if o.by_day:
+        print()
+        print("  Daily:")
+        print("  " + "\u2500" * 53)
+        max_cost = max(d.cost for d in o.by_day) if o.by_day else 0
+        for d in o.by_day:
+            try:
+                dt = datetime.strptime(d.date, "%Y-%m-%d")
+                label = dt.strftime("%b %d")
+            except (ValueError, TypeError):
+                label = d.date
+            bar = _bar(int(d.cost * 100), int(max_cost * 100))
+            hit = d.cache_hit_ratio
+            cache_str = f"  cache: {hit:.0%}" if d.cache_read_tokens else ""
+            print(
+                f"    {label}  {bar:12s}  ${d.cost:>6,.2f}"
+                f"  ({d.sessions} sessions){cache_str}"
+            )
 
-def _print_cost_by_agent(by_agent: list[dict[str, Any]]) -> None:
-    if not by_agent:
-        return
-    print("\nBy agent:")
-    for row in by_agent:
-        total = row["input"] + row["output"]
-        print(f"  {row['agent']:30s} {row['traces']:>4} traces {total:>12,} tokens")
-
-
-def _print_cost_by_day(by_day: list[dict[str, Any]]) -> None:
-    if not by_day:
-        return
-    max_total = max((r["input"] + r["output"]) for r in by_day)
-
-    print("\nDaily breakdown:")
-    for row in by_day:
-        total = row["input"] + row["output"]
-        bar = _bar(total, max_total)
-        # Format date as "Mar 27" style
-        try:
-            dt = datetime.strptime(row["date"], "%Y-%m-%d")
-            label = dt.strftime("%b %d")
-        except (ValueError, TypeError):
-            label = str(row["date"])
-        print(f"  {label}  {bar:12s}  {row['traces']:>3} traces {total:>12,} tokens")
+    print()
 
 
 # ── forget ──────────────────────────────────────────────────────────────
@@ -627,82 +622,171 @@ def cmd_serve(args: argparse.Namespace) -> None:
     serve(port=args.port, db_path=db)
 
 
-# ── waste ──────────────────────────────────────────────────────────────
+# ── backfill ──────────────────────────────────────────────────────────
 
 
-def cmd_waste(args: argparse.Namespace) -> None:
-    from openflux.waste import analyze_efficiency
+def cmd_backfill(args: argparse.Namespace) -> None:
+    """Import all historical Claude Code transcripts into OpenFlux."""
+    from openflux._util import generate_trace_id
+    from openflux.adapters._claude_code import (
+        _parse_transcript,  # pyright: ignore[reportPrivateUsage]
+        _write_to_sinks,  # pyright: ignore[reportPrivateUsage]
+    )
+    from openflux.schema import Status, Trace
 
-    sink = _get_sink()
-    try:
-        report = analyze_efficiency(sink.conn, days=args.days, agent=args.agent)
-    finally:
-        sink.close()
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.exists():
+        print("No Claude Code projects found at ~/.claude/projects/")
+        return
 
-    _print_efficiency(report, args.days)
+    refresh = bool(getattr(args, "refresh", False))
 
+    # Collect all existing session IDs to avoid duplicates
+    db_path = _get_db_path()
+    existing: set[str] = set()
+    if db_path.exists():
+        sink = SQLiteSink(path=db_path)
+        try:
+            rows = sink.conn.execute(
+                "SELECT session_id FROM traces WHERE agent = 'claude-code'"
+            ).fetchall()
+            existing = {r[0] for r in rows}
+        finally:
+            sink.close()
 
-def _print_efficiency(r: EfficiencyReport, days: int) -> None:
-    print(f"Tool Efficiency \u2014 last {days} days")
-    print("\u2550" * 55)
-    print()
-    print(f"  Sessions:    {r.total_sessions}")
-    print(f"  Tool calls:  {r.total_tool_calls:,}")
-    print(f"  Est. cost:   ${r.total_cost:,.2f}")
+    # Find all JSONL transcript files
+    transcripts = sorted(projects_dir.rglob("*.jsonl"))
+    if not transcripts:
+        print("No transcript files found.")
+        return
 
-    # Bash breakdown — what is the agent actually using Bash for
-    if r.bash_breakdown:
-        print()
-        print("  What Bash is used for:")
-        print("  " + "\u2500" * 53)
-        for cat in r.bash_breakdown[:12]:
-            bar_w = int(cat.pct * 0.3)
-            bar = "\u2588" * bar_w if bar_w > 0 else ""
-            print(f"    {cat.name:<28s} {cat.calls:>5,}  ({cat.pct:>4.1f}%)  {bar}")
+    print(f"Found {len(transcripts)} transcript(s) in {projects_dir}")
+    if existing:
+        action = "re-parsing" if refresh else "skipping"
+        print(f"Already imported: {len(existing)} session(s) ({action})")
 
-    # Overhead
-    if r.overhead_calls > 0:
-        print()
-        print(f"  Agent overhead:  {r.overhead_calls:,} calls  ({r.overhead_pct:.1f}%)")
-        print("  " + "\u2500" * 53)
-        print("  TaskCreate, ToolSearch, SendMessage, etc.")
+    imported = 0
+    skipped = 0
+    errored = 0
 
-    # Redundancy
-    if r.total_redundant_calls > 0:
-        print()
-        print(
-            f"  Redundant calls: {r.total_redundant_calls:,}"
-            f"  ({r.redundancy_pct:.1f}% of all tool calls)"
+    for path in transcripts:
+        session_id = path.stem
+        if session_id in existing and not refresh:
+            skipped += 1
+            continue
+
+        try:
+            td = _parse_transcript(path)
+        except Exception:
+            errored += 1
+            continue
+
+        # Skip empty transcripts (no user messages)
+        if td.turn_count == 0:
+            skipped += 1
+            continue
+
+        # Derive project/scope from path
+        # ~/.claude/projects/-Users-foo-bar/session.jsonl
+        project_dir_name = path.parent.name
+        scope = td.scope
+        if not scope and project_dir_name:
+            # -Users-foo-bar → bar
+            parts = project_dir_name.split("-")
+            scope = parts[-1] if parts else project_dir_name
+
+        from openflux.adapters._claude_code import (
+            _BILLABLE_MESSAGES_KEY,  # pyright: ignore[reportPrivateUsage]
         )
-        print("  " + "\u2500" * 53)
-        print("  Same command repeated in a session without changes between.")
-        for pat in r.redundant_patterns[:8]:
-            print(
-                f"    {pat.pattern:<28s} {pat.redundant_calls:>4}"
-                f" redundant / {pat.total_calls} total"
-            )
 
-    print()
-    print("Run `openflux replay <id>` to see any session's tool sequence.")
+        trace = Trace(
+            id=generate_trace_id(),
+            timestamp=(
+                td.context[0].timestamp
+                if td.context and td.context[0].timestamp
+                else path.stat().st_mtime.__str__()
+            ),
+            agent="claude-code",
+            session_id=session_id,
+            model=td.model,
+            task=td.task,
+            decision=td.decision,
+            status=Status.COMPLETED,
+            correction=td.correction,
+            scope=scope,
+            context=td.context,
+            turn_count=td.turn_count,
+            token_usage=td.token_usage,
+            duration_ms=td.duration_ms,
+        )
+        if td.messages:
+            trace.metadata[_BILLABLE_MESSAGES_KEY] = td.messages
+
+        # Use first entry timestamp if available
+        try:
+            import json as _json
+
+            first_line = path.read_text(encoding="utf-8", errors="ignore").split(
+                "\n", 1
+            )[0]
+            first_entry = _json.loads(first_line)
+            ts = first_entry.get("timestamp", "")
+            if ts:
+                trace.timestamp = ts
+        except Exception:
+            pass
+
+        try:
+            _write_to_sinks(trace)
+            imported += 1
+        except Exception:
+            errored += 1
+
+    print(f"\nDone: {imported} imported, {skipped} skipped, {errored} errors")
 
 
-# ── replay ─────────────────────────────────────────────────────────────
+# ── sessions ──────────────────────────────────────────────────────────
 
 
-def cmd_replay(args: argparse.Namespace) -> None:
-    from openflux.waste import replay_session
+def cmd_sessions(args: argparse.Namespace) -> None:
+    from openflux.insights import session_costs
 
     sink = _get_sink()
     try:
-        replay = replay_session(sink.conn, args.trace_id)
+        sessions = session_costs(
+            sink.conn,
+            days=args.days,
+            agent=args.agent or None,
+            limit=args.limit,
+            sort=args.sort,
+        )
     finally:
         sink.close()
 
-    if replay is None:
-        print(f"Trace not found: {args.trace_id}", file=sys.stderr)
-        sys.exit(1)
+    if not sessions:
+        print("No sessions found.")
+        return
 
-    _print_replay(replay)
+    sort_label = {
+        "cost": "most expensive",
+        "cache": "worst cache",
+        "time": "most recent",
+    }
+    print(f"Sessions: {sort_label.get(args.sort, args.sort)} first")
+    print("\u2550" * 75)
+
+    for s in sessions:
+        mark = "\u2717" if s.status == "error" else "\u2713"
+        cache_str = f"{s.cache_hit_ratio:.0%}" if s.cache_read_tokens else "  -"
+        dur = _fmt_duration(s.duration_ms)
+        task = _truncate(s.task, 40)
+        print(
+            f"  {mark} ${s.cost:>6.2f}  cache:{cache_str:>4s}"
+            f"  {s.tool_count:>3} tools  {dur:>5s}  {s.trace_id}  {task}"
+        )
+
+    total_cost = sum(s.cost for s in sessions)
+    print(f"\n  {len(sessions)} sessions shown, ${total_cost:,.2f} total")
 
 
 def _fmt_duration(ms: int) -> str:
@@ -715,90 +799,138 @@ def _fmt_duration(ms: int) -> str:
     return f"{mins:.0f}m"
 
 
-def _print_replay(s: SessionReplay) -> None:
-    dur = _fmt_duration(s.duration_ms)
-    print(f'{s.trace_id} \u2014 "{s.task[:60]}"')
-    print(
-        f"{s.status} | {s.turn_count} turns | ${s.total_cost:.2f} | {dur} | {s.model}"
-    )
-    print("\u2500" * 65)
-
-    # Tool sequence
-    for step in s.tools:
-        mark = "\u2717" if step.error else "\u2713"
-        target = step.target[:45] if step.target else ""
-        summary = step.output_summary
-        suffix = f"  {summary}" if summary else ""
-        print(f"  {step.index:>3}  {step.name:<14s} {target:<45s} {mark}{suffix}")
-
-    # Per-session breakdown
-    if s.tool_breakdown:
-        print()
-        print("  Breakdown:")
-        for cat in s.tool_breakdown[:10]:
-            print(f"    {cat.name:<30s} {cat.calls:>4}  ({cat.pct:.0f}%)")
-
-    # Per-session redundancy
-    if s.redundant_in_session:
-        print()
-        print("  Repeated calls:")
-        for pat in s.redundant_in_session[:5]:
-            print(
-                f"    {pat.pattern:<30s} {pat.redundant_calls}"
-                f" redundant / {pat.total_calls} total"
-            )
-
-    print()
-    print(f"  Total cost: ${s.total_cost:.2f}")
+# ── budget ────────────────────────────────────────────────────────────
 
 
-# ── digest ─────────────────────────────────────────────────────────────
+def cmd_budget(args: argparse.Namespace) -> None:
+    if args.budget_command == "check":
+        _budget_check(args)
+    elif args.budget_command == "set":
+        _budget_set(args)
+    else:
+        print("Usage: openflux budget check|set")
+        sys.exit(1)
 
 
-def cmd_digest(args: argparse.Namespace) -> None:
-    from openflux.waste import analyze_efficiency
+def _budget_check(args: argparse.Namespace) -> None:
+    from openflux.insights import budget_status
+
+    budget = _load_budget()
+    if budget is None:
+        print("No budget set. Run: openflux budget set <amount>")
+        print("  Example: openflux budget set 50")
+        return
 
     sink = _get_sink()
     try:
-        days: int = 7 if args.weekly else 1 if args.daily else 7
-        report = analyze_efficiency(sink.conn, days=days, agent=args.agent)
-
-        top = sink.conn.execute(
-            "SELECT id, task, status, "
-            "(token_input * 15.0 + token_output * 75.0 "
-            "+ token_cache_read * 1.5 + token_cache_creation * 18.75) "
-            "/ 1000000.0 as cost "
-            "FROM traces "
-            "WHERE timestamp >= datetime('now', ? || ' days') "
-            + ("AND agent = ? " if args.agent else "")
-            + "ORDER BY cost DESC LIMIT 5",
-            ([f"-{days}"] + ([args.agent] if args.agent else [])),
-        ).fetchall()
+        status = budget_status(sink.conn, daily_budget=budget)
     finally:
         sink.close()
 
-    period = "today" if days == 1 else f"last {days} days"
-    print(f"OpenFlux Digest \u2014 {period}")
-    print("\u2550" * 45)
-    print(
-        f"\n  {report.total_sessions} sessions"
-        f" | {report.total_tool_calls:,} tool calls"
-        f" | ${report.total_cost:,.2f}"
-    )
+    _print_budget(status)
 
-    if report.overhead_pct > 0:
-        print(f"  Overhead: {report.overhead_pct:.1f}%")
-    if report.redundancy_pct > 0:
-        print(f"  Redundancy: {report.redundancy_pct:.1f}%")
 
-    if top:
-        print("\n  Most expensive sessions:")
-        for trace_id, task, status, cost in top:
-            task_short = (task or "")[:50]
-            mark = "\u2717" if status == "error" else "\u2713"
-            print(f"    {mark} ${cost:>6.2f}  {trace_id}  {task_short}")
+def _budget_set(args: argparse.Namespace) -> None:
+    amount = args.amount
+    config_path = Path.home() / ".openflux" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
 
+    config: dict[str, Any] = {}
+    if config_path.exists():
+        import contextlib
+
+        with contextlib.suppress(json.JSONDecodeError):
+            config = json.loads(config_path.read_text())
+
+    config["daily_budget"] = amount
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    print(f"Daily budget set to ${amount:.2f}")
+    print("Run `openflux budget check` to see status.")
+
+
+def _load_budget() -> float | None:
+    config_path = Path.home() / ".openflux" / "config.json"
+    if not config_path.exists():
+        return None
+    try:
+        config = json.loads(config_path.read_text())
+        return float(config.get("daily_budget", 0)) or None
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+def _print_budget(b: object) -> None:
+    from openflux.insights import BudgetStatus
+
+    s: BudgetStatus = b  # type: ignore[assignment]
+    print("Budget Status")
+    print("\u2550" * 40)
+    print(f"  Daily budget:   ${s.daily_budget:,.2f}")
+    print(f"  Spent today:    ${s.spent_today:,.2f}")
+    print(f"  Remaining:      ${s.remaining_today:,.2f}")
     print()
+
+    # Progress bar
+    width = 30
+    filled = min(width, int(s.pct_used / 100 * width))
+    bar = "\u2588" * filled + "\u2591" * (width - filled)
+    status = "\u2713 on track" if s.on_track else "\u2717 over budget"
+    print(f"  [{bar}] {s.pct_used:.0f}% {status}")
+
+    if s.projected_eod > 0:
+        print(f"\n  Projected EOD:  ${s.projected_eod:,.2f}")
+        if s.projected_eod > s.daily_budget:
+            over = s.projected_eod - s.daily_budget
+            print(f"  At this rate, you'll exceed budget by ${over:,.2f}")
+
+    print(f"  Sessions today: {s.sessions_today}")
+
+
+# ── anomalies ─────────────────────────────────────────────────────────
+
+
+def cmd_anomalies(args: argparse.Namespace) -> None:
+    from openflux.insights import detect_anomalies
+
+    sink = _get_sink()
+    try:
+        anomalies = detect_anomalies(
+            sink.conn, days=args.days, agent=args.agent or None
+        )
+    finally:
+        sink.close()
+
+    if not anomalies:
+        print(f"No anomalies detected in the last {args.days} days.")
+        return
+
+    print(f"Cost anomalies: last {args.days} days")
+    print("\u2550" * 65)
+
+    # Group by type
+    by_type: dict[str, list[Any]] = {}
+    for a in anomalies:
+        by_type.setdefault(a.type, []).append(a)
+
+    type_labels = {
+        "cost_spike": "Cost Spikes",
+        "cache_miss": "Cache Misses",
+        "error_storm": "Error Storms",
+        "loop": "Agent Loops",
+    }
+
+    for atype, label in type_labels.items():
+        items = by_type.get(atype, [])
+        if not items:
+            continue
+        print(f"\n  {label} ({len(items)}):")
+        print("  " + "\u2500" * 63)
+        for a in items[:5]:
+            severity = "\u26a0" if a.severity == "warning" else "\u2717"
+            print(f"    {severity} {a.trace_id}  ${a.cost:>6.2f}  {a.description}")
+
+    total_waste = sum(a.cost for a in anomalies)
+    print(f"\n  {len(anomalies)} anomalies, ${total_waste:,.2f} potentially wasted")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -870,22 +1002,47 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--db", help="Path to SQLite database")
     p_serve.set_defaults(func=cmd_serve)
 
-    p_waste = subs.add_parser("waste", help="Analyze wasted spend")
-    p_waste.add_argument(
-        "--days", type=int, default=30, help="Lookback window (default: 30)"
+    p_sessions = subs.add_parser("sessions", help="Per-session cost breakdown")
+    p_sessions.add_argument(
+        "--days", type=int, default=7, help="Lookback window (default: 7)"
     )
-    p_waste.add_argument("--agent", help="Filter by agent name")
-    p_waste.set_defaults(func=cmd_waste)
+    p_sessions.add_argument("--agent", help="Filter by agent name")
+    p_sessions.add_argument(
+        "--limit", type=int, default=20, help="Max results (default: 20)"
+    )
+    p_sessions.add_argument(
+        "--sort",
+        choices=["cost", "cache", "time"],
+        default="cost",
+        help="Sort order (default: cost)",
+    )
+    p_sessions.set_defaults(func=cmd_sessions)
 
-    p_replay = subs.add_parser("replay", help="Replay a session's tool sequence")
-    p_replay.add_argument("trace_id", help="Trace ID to replay")
-    p_replay.set_defaults(func=cmd_replay)
+    p_budget = subs.add_parser("budget", help="Budget tracking")
+    budget_subs = p_budget.add_subparsers(dest="budget_command")
+    budget_check = budget_subs.add_parser("check", help="Check today's budget status")
+    budget_check.set_defaults(func=cmd_budget)
+    budget_set = budget_subs.add_parser("set", help="Set daily budget cap")
+    budget_set.add_argument("amount", type=float, help="Daily budget in USD")
+    budget_set.set_defaults(func=cmd_budget)
+    p_budget.set_defaults(func=cmd_budget, budget_command=None)
 
-    p_digest = subs.add_parser("digest", help="Weekly/daily spending digest")
-    p_digest.add_argument("--weekly", action="store_true", help="Last 7 days")
-    p_digest.add_argument("--daily", action="store_true", help="Today only")
-    p_digest.add_argument("--agent", help="Filter by agent name")
-    p_digest.set_defaults(func=cmd_digest)
+    p_anomalies = subs.add_parser("anomalies", help="Detect cost anomalies")
+    p_anomalies.add_argument(
+        "--days", type=int, default=7, help="Lookback window (default: 7)"
+    )
+    p_anomalies.add_argument("--agent", help="Filter by agent name")
+    p_anomalies.set_defaults(func=cmd_anomalies)
+
+    p_backfill = subs.add_parser(
+        "backfill", help="Import historical Claude Code transcripts"
+    )
+    p_backfill.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-parse already-imported sessions (apply token-counting fixes)",
+    )
+    p_backfill.set_defaults(func=cmd_backfill)
 
     return parser
 

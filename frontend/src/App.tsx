@@ -12,12 +12,12 @@ import { useTrace } from "./hooks/useTrace";
 import { useStats } from "./hooks/useStats";
 import { useKeyboard } from "./hooks/useKeyboard";
 
-type View = "traces" | "stats" | "waste";
+type View = "traces" | "stats" | "insights";
 
 function getViewFromHash(): View {
   const h = window.location.hash;
   if (h === "#stats") return "stats";
-  if (h === "#waste") return "waste";
+  if (h === "#insights") return "insights";
   return "traces";
 }
 
@@ -108,7 +108,7 @@ export function App() {
         isDark={isDark}
       >
         {view === "traces" ? (
-          <div className="flex h-full overflow-hidden">
+          <div className="flex flex-1 min-h-0 overflow-hidden">
             <div
               className={`flex flex-col ${selectedTraceId ? "flex-1 min-w-0" : "w-full"} transition-all duration-200`}
             >
@@ -158,7 +158,7 @@ export function App() {
             </AnimatePresence>
           </div>
         ) : view === "stats" ? (
-          <div className="overflow-auto h-full">
+          <div className="overflow-auto flex-1 min-h-0">
             <StatsView
               stats={stats}
               timeline={timeline}

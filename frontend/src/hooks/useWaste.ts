@@ -1,20 +1,20 @@
 import { useState, useEffect } from "react";
-import { fetchWaste, fetchReplay } from "../api";
-import type { EfficiencyReport, SessionReplay } from "../types";
+import { fetchInsights, fetchInsightsSessions, fetchInsightsAnomalies } from "../api";
+import type { CostOverview, SessionCost, CostAnomaly } from "../types";
 
-export function useWaste(days = 30) {
-  const [report, setReport] = useState<EfficiencyReport | null>(null);
+export function useInsights(days = 7) {
+  const [overview, setOverview] = useState<CostOverview | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchWaste(days)
+    fetchInsights(days)
       .then((data) => {
-        if (!cancelled) setReport(data);
+        if (!cancelled) setOverview(data);
       })
       .catch(() => {
-        if (!cancelled) setReport(null);
+        if (!cancelled) setOverview(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -24,26 +24,22 @@ export function useWaste(days = 30) {
     };
   }, [days]);
 
-  return { report, loading };
+  return { overview, loading };
 }
 
-export function useReplay(traceId: string | null) {
-  const [replay, setReplay] = useState<SessionReplay | null>(null);
-  const [loading, setLoading] = useState(false);
+export function useInsightsSessions(days = 7, sort = "cost") {
+  const [sessions, setSessions] = useState<SessionCost[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!traceId) {
-      setReplay(null);
-      return;
-    }
     let cancelled = false;
     setLoading(true);
-    fetchReplay(traceId)
+    fetchInsightsSessions(days, undefined, 20, sort)
       .then((data) => {
-        if (!cancelled) setReplay(data);
+        if (!cancelled) setSessions(data.sessions);
       })
       .catch(() => {
-        if (!cancelled) setReplay(null);
+        if (!cancelled) setSessions([]);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -51,7 +47,32 @@ export function useReplay(traceId: string | null) {
     return () => {
       cancelled = true;
     };
-  }, [traceId]);
+  }, [days, sort]);
 
-  return { replay, loading };
+  return { sessions, loading };
+}
+
+export function useAnomalies(days = 7) {
+  const [anomalies, setAnomalies] = useState<CostAnomaly[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchInsightsAnomalies(days)
+      .then((data) => {
+        if (!cancelled) setAnomalies(data.anomalies);
+      })
+      .catch(() => {
+        if (!cancelled) setAnomalies([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [days]);
+
+  return { anomalies, loading };
 }

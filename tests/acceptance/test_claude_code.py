@@ -337,6 +337,147 @@ class TestClaudeCodeTranscriptParsing:
         # System prompts aren't recorded in real Claude Code transcripts
         assert td.context == []
 
+    def test_transcript_dedupes_repeated_message_id(self, tmp_path):
+        """Multi-tool API responses appear once per tool_use block in the
+        transcript, each carrying an identical copy of the parent message's
+        usage. We must count each Anthropic message.id exactly once."""
+        transcript = tmp_path / "dup.jsonl"
+        usage = {
+            "input_tokens": 10,
+            "output_tokens": 200,
+            "cache_read_input_tokens": 50_000,
+            "cache_creation_input_tokens": 100,
+        }
+        # One user turn + one assistant API call duplicated 5x (5 tool blocks)
+        entries = [
+            {
+                "type": "user",
+                "timestamp": "2026-04-01T00:00:00Z",
+                "message": {"content": "do five things"},
+            },
+            *[
+                {
+                    "type": "assistant",
+                    "timestamp": "2026-04-01T00:00:01Z",
+                    "message": {
+                        "id": "msg_dup1",
+                        "model": "claude-opus-4-7",
+                        "usage": usage,
+                        "content": [{"type": "tool_use", "name": f"tool{i}"}],
+                    },
+                }
+                for i in range(5)
+            ],
+        ]
+        with transcript.open("w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        td = _parse_transcript(transcript)
+        assert td.token_usage is not None
+        assert td.token_usage.input_tokens == 10
+        assert td.token_usage.output_tokens == 200
+        assert td.token_usage.cache_read_tokens == 50_000
+        assert td.token_usage.cache_creation_tokens == 100
+
+    def test_transcript_dedup_keeps_max_for_streaming_snapshots(self, tmp_path):
+        """Streaming snapshots share message.id but output_tokens grows
+        across the snapshots. We must take the MAX (final state), not the
+        first or sum."""
+        transcript = tmp_path / "stream.jsonl"
+
+        def asst(out_tokens: int):
+            return {
+                "type": "assistant",
+                "timestamp": "2026-04-01T00:00:01Z",
+                "message": {
+                    "id": "msg_streaming",
+                    "model": "claude-opus-4-7",
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": out_tokens,
+                        "cache_read_input_tokens": 5_000,
+                        "cache_creation_input_tokens": 10,
+                    },
+                    "content": [{"type": "text", "text": "x"}],
+                },
+            }
+
+        entries = [
+            {
+                "type": "user",
+                "timestamp": "2026-04-01T00:00:00Z",
+                "message": {"content": "stream me"},
+            },
+            asst(50),  # mid-stream
+            asst(200),  # mid-stream
+            asst(514),  # final
+        ]
+        with transcript.open("w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        td = _parse_transcript(transcript)
+        assert td.token_usage is not None
+        # output should be the FINAL value, not sum (764) or first (50)
+        assert td.token_usage.output_tokens == 514
+        assert td.token_usage.input_tokens == 100
+        assert td.token_usage.cache_read_tokens == 5_000
+        assert td.token_usage.cache_creation_tokens == 10
+
+    def test_transcript_skips_synthetic_model(self, tmp_path):
+        """Claude Code injects "<synthetic>" assistant turns that never hit
+        the API. Their usage stamps shouldn't count toward billable tokens."""
+        transcript = tmp_path / "syn.jsonl"
+        entries = [
+            {
+                "type": "user",
+                "timestamp": "2026-04-01T00:00:00Z",
+                "message": {"content": "real prompt"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-04-01T00:00:01Z",
+                "message": {
+                    "id": "msg_real",
+                    "model": "claude-opus-4-7",
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 200,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-04-01T00:00:02Z",
+                "message": {
+                    "id": "msg_synthetic",
+                    "model": "<synthetic>",
+                    "usage": {
+                        "input_tokens": 9999,
+                        "output_tokens": 9999,
+                        "cache_read_input_tokens": 9999,
+                        "cache_creation_input_tokens": 9999,
+                    },
+                    "content": [{"type": "text", "text": "injected"}],
+                },
+            },
+        ]
+        with transcript.open("w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        td = _parse_transcript(transcript)
+        assert td.model == "claude-opus-4-7"
+        assert td.token_usage is not None
+        assert td.token_usage.input_tokens == 100
+        assert td.token_usage.output_tokens == 200
+        assert td.token_usage.cache_read_tokens == 0
+        assert td.token_usage.cache_creation_tokens == 0
+
     def test_transcript_integration_with_hooks(self, db_path, openflux_dir):
         """Full flow: hooks collect tool data, transcript provides session-level fields."""
         session_id = generate_session_id()

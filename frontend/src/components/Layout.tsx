@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 
 interface LayoutProps {
   children: ReactNode;
-  view: "traces" | "stats" | "waste";
-  onViewChange: (v: "traces" | "stats" | "waste") => void;
+  view: "traces" | "stats" | "insights";
+  onViewChange: (v: "traces" | "stats" | "insights") => void;
   onToggleDark: () => void;
   isDark: boolean;
 }
@@ -33,13 +33,12 @@ const tabs = [
     ),
   },
   {
-    key: "waste" as const,
-    label: "Waste",
+    key: "insights" as const,
+    label: "Insights",
     icon: (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-        <line x1="12" y1="9" x2="12" y2="13" />
-        <line x1="12" y1="17" x2="12.01" y2="17" />
+        <line x1="12" y1="1" x2="12" y2="23" />
+        <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
       </svg>
     ),
   },
@@ -122,7 +121,7 @@ export function Layout({
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden">{children}</main>
+      <main className="flex-1 flex flex-col overflow-hidden min-h-0">{children}</main>
     </div>
   );
 }

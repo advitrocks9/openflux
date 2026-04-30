@@ -479,17 +479,13 @@ class TestCmdCost:
         _run_cli(["cost", "--days", "7"], monkeypatch)
         out = capsys.readouterr().out
 
-        assert "Token Usage (last 7 days)" in out
-        assert "Traces:" in out
-        assert "Input:" in out
-        assert "Output:" in out
-        assert "Total:" in out
+        assert "Cost intelligence" in out
+        assert "last 7 days" in out
+        assert "Total spend:" in out
+        assert "Burn rate:" in out
         assert "By model:" in out
         assert "claude-sonnet-4-20250514" in out
         assert "gpt-4o-mini" in out
-        assert "By agent:" in out
-        assert "claude-code" in out
-        assert "langchain-rag" in out
 
     def test_cost_agent_filter(
         self,
@@ -517,9 +513,9 @@ class TestCmdCost:
         _run_cli(["cost", "--agent", "claude-code"], monkeypatch)
         out = capsys.readouterr().out
 
-        # Only claude-code agent should appear
-        assert "claude-code" in out
-        assert "other-agent" not in out
+        # Only 1 session (filtered to claude-code)
+        assert "Sessions:         1" in out
+        assert "gpt-4o-mini" not in out
 
     def test_cost_empty_db(
         self,
@@ -532,8 +528,8 @@ class TestCmdCost:
         monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
         _run_cli(["cost"], monkeypatch)
         out = capsys.readouterr().out
-        assert "Traces:" in out
-        assert "0" in out
+        assert "Sessions:         0" in out
+        assert "$0.00" in out
 
     def test_cost_token_values(
         self,
@@ -561,10 +557,10 @@ class TestCmdCost:
         monkeypatch.setenv("OPENFLUX_DB_PATH", str(db_path))
         _run_cli(["cost"], monkeypatch)
         out = capsys.readouterr().out
-        # Input: 3,000, Output: 1,500, Total: 4,500
-        assert "3,000" in out
-        assert "1,500" in out
-        assert "4,500" in out
+        # Should show cost and model info
+        assert "Cost intelligence" in out
+        assert "claude-sonnet-4-20250514" in out
+        assert "Total spend:" in out
 
 
 class TestCmdForget:

@@ -68,6 +68,12 @@ class TranscriptData:
     scope: str | None = None
     correction: str | None = None
     context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
+    # Map of Anthropic message_id → per-message billing record. Used to
+    # populate `billable_messages` so the same API call across resumed/forked
+    # session transcripts is billed exactly once (PK on message_id dedupes).
+    messages: dict[str, dict[str, int | str]] = field(
+        default_factory=lambda: dict[str, dict[str, int | str]]()
+    )
 
 
 @dataclass(slots=True)
@@ -445,7 +451,7 @@ def handle_post_tool_use(data: dict[str, Any]) -> None:
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
     tool_output = data.get("tool_response", "")
-    if isinstance(tool_output, dict):
+    if not isinstance(tool_output, str):
         tool_output = json.dumps(tool_output, default=str)
 
     timestamp = utc_now()
@@ -478,7 +484,7 @@ def handle_post_tool_use_failure(data: dict[str, Any]) -> None:
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
     tool_output = data.get("tool_response", data.get("error", ""))
-    if isinstance(tool_output, dict):
+    if not isinstance(tool_output, str):
         tool_output = json.dumps(tool_output, default=str)
 
     timestamp = utc_now()
@@ -653,6 +659,9 @@ def _try_parse_transcript(
     return None
 
 
+_BILLABLE_MESSAGES_KEY = "_billable_messages"
+
+
 def _apply_transcript_data(
     trace: Trace, td: TranscriptData, tool_event_count: int
 ) -> None:
@@ -675,6 +684,10 @@ def _apply_transcript_data(
     trace.turn_count = td.turn_count if td.turn_count > 0 else tool_event_count
     if td.duration_ms > 0:
         trace.duration_ms = td.duration_ms
+    if td.messages:
+        # Stashed in metadata for _write_to_sinks to pick up; stripped
+        # before persisting to traces table (it goes to billable_messages).
+        trace.metadata[_BILLABLE_MESSAGES_KEY] = td.messages
 
 
 def _apply_fallback_data(
@@ -746,7 +759,6 @@ def _accumulate_usage(usage: dict[str, Any], totals: TokenUsage) -> None:
 def _parse_transcript(path: Path) -> TranscriptData:
     """Parse Claude Code's JSONL transcript for session-level fields."""
     data = TranscriptData()
-    token_totals = TokenUsage()
 
     first_timestamp: str = ""
     last_timestamp: str = ""
@@ -754,6 +766,16 @@ def _parse_transcript(path: Path) -> TranscriptData:
     correction_count = 0
     git_branch: str = ""
     project_name: str = ""
+    # Multi-tool API responses get one transcript entry per tool_use
+    # block; long responses also stream intermediate snapshots. All
+    # copies share the message.id but `output_tokens` grows as the model
+    # generates. We must keep the MAX usage per message.id (final state),
+    # otherwise we either over-count (sum copies) or under-count (take
+    # the first partial snapshot). input/cache fields are constant
+    # across copies; max() is a no-op for them.
+    usage_by_msg_id: dict[str, dict[str, int]] = {}
+    # Track usage from messages without an id, accumulated as-is.
+    anonymous_totals = TokenUsage()
 
     with path.open("r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -793,11 +815,43 @@ def _parse_transcript(path: Path) -> TranscriptData:
                     last_correction_text = text
 
             elif entry_type == "assistant":
-                if not data.model:
-                    data.model = msg.get("model", "")
+                model = msg.get("model", "")
+                if not data.model and model and model != "<synthetic>":
+                    data.model = model
+                # "<synthetic>" entries are local injections (recovery,
+                # restart prompts) that never hit the Anthropic API and
+                # carry no real billable usage.
                 usage = msg.get("usage")
-                if usage:
-                    _accumulate_usage(usage, token_totals)
+                msg_id = msg.get("id", "")
+                if usage and model != "<synthetic>":
+                    if msg_id:
+                        prior = usage_by_msg_id.get(msg_id)
+                        if prior is None:
+                            usage_by_msg_id[msg_id] = {
+                                "input": usage.get("input_tokens", 0),
+                                "output": usage.get("output_tokens", 0),
+                                "cr": usage.get("cache_read_input_tokens", 0),
+                                "cc": usage.get("cache_creation_input_tokens", 0),
+                                "model": model,
+                                "ts": ts,
+                            }
+                        else:
+                            prior["input"] = max(
+                                int(prior["input"]), usage.get("input_tokens", 0)
+                            )
+                            prior["output"] = max(
+                                int(prior["output"]), usage.get("output_tokens", 0)
+                            )
+                            prior["cr"] = max(
+                                int(prior["cr"]),
+                                usage.get("cache_read_input_tokens", 0),
+                            )
+                            prior["cc"] = max(
+                                int(prior["cc"]),
+                                usage.get("cache_creation_input_tokens", 0),
+                            )
+                    else:
+                        _accumulate_usage(usage, anonymous_totals)
                 text = _extract_assistant_text(msg)
                 if text:
                     # Keep updating - we want the last one
@@ -826,8 +880,31 @@ def _parse_transcript(path: Path) -> TranscriptData:
         data.scope = f"{project_name}/{git_branch}" if git_branch else project_name
 
     # Token usage (only set if we actually saw usage data)
+    token_totals = TokenUsage(
+        input_tokens=anonymous_totals.input_tokens
+        + sum(int(u["input"]) for u in usage_by_msg_id.values()),
+        output_tokens=anonymous_totals.output_tokens
+        + sum(int(u["output"]) for u in usage_by_msg_id.values()),
+        cache_read_tokens=anonymous_totals.cache_read_tokens
+        + sum(int(u["cr"]) for u in usage_by_msg_id.values()),
+        cache_creation_tokens=anonymous_totals.cache_creation_tokens
+        + sum(int(u["cc"]) for u in usage_by_msg_id.values()),
+    )
     if token_totals.input_tokens or token_totals.output_tokens:
         data.token_usage = token_totals
+
+    # Per-message billing records. The sink dedupes on message_id PK so
+    # the same Anthropic API call across resumed/forked sessions is
+    # billed exactly once.
+    for mid, vals in usage_by_msg_id.items():
+        data.messages[mid] = {
+            "model": vals["model"],
+            "timestamp": vals["ts"],
+            "input_tokens": int(vals["input"]),
+            "output_tokens": int(vals["output"]),
+            "cache_read_tokens": int(vals["cr"]),
+            "cache_creation_tokens": int(vals["cc"]),
+        }
 
     # Corrections
     if correction_count > 0:
@@ -855,9 +932,17 @@ def _write_to_sinks(trace: Trace) -> None:
     try:
         from openflux.sinks.sqlite import SQLiteSink
 
+        # Pull billable-messages payload off metadata before write; it
+        # belongs in billable_messages, not in the traces.metadata column.
+        messages = cast(
+            dict[str, dict[str, int | str]],
+            trace.metadata.pop(_BILLABLE_MESSAGES_KEY, {}),
+        )
         sink = SQLiteSink()
         try:
             sink.write(trace)
+            if messages:
+                sink.record_messages(trace.agent, trace.session_id, messages)
         finally:
             sink.close()
     except Exception:
