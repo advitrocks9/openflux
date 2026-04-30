@@ -58,7 +58,13 @@ class DayCost:
 
 @dataclass(slots=True)
 class SessionCost:
-    """Per-session cost with cache efficiency."""
+    """Per-session cost with cache efficiency.
+
+    `uncached_input_cost` is the dollar amount paid at full input rate (the
+    portion that didn't hit the cache). It's the actionable "cache pain"
+    metric; cache_hit_ratio saturates near 100% on healthy Claude usage and
+    is mostly informational.
+    """
 
     trace_id: str
     task: str
@@ -72,6 +78,7 @@ class SessionCost:
     cache_read_tokens: int
     cache_creation_tokens: int
     cache_hit_ratio: float
+    uncached_input_cost: float
     duration_ms: int
     turn_count: int
     tool_count: int
@@ -150,6 +157,24 @@ def _row_cost_without_cache(row: tuple[Any, ...]) -> float:
         output_tokens=row[_C["token_output"]] or 0,
         cache_read_tokens=0,
         cache_creation_tokens=row[_C["token_cache_creation"]] or 0,
+    )
+
+
+def _uncached_input_cost(model: str, input_tokens: int) -> float:
+    """Dollar cost of input tokens billed at full (non-cache) rate.
+
+    This is the "cache pain" metric: how much you paid full freight on
+    input that didn't hit the cache. Unlike `cache_hit_ratio`, it doesn't
+    saturate at the high end and stays actionable on healthy traffic.
+    """
+    from openflux._pricing import estimate_cost
+
+    return estimate_cost(
+        model=model or "",
+        input_tokens=input_tokens or 0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
     )
 
 
@@ -576,8 +601,10 @@ def session_costs(
             "FROM trace_tools WHERE trace_id = ?",
             (trace_id,),
         ).fetchone()
-        tool_count = tool_row[0] if tool_row else 0
-        error_count = tool_row[1] if tool_row else 0
+        # SUM over zero rows returns NULL in SQLite, not 0. Guard both fields
+        # so SessionCost.{tool_count,error_count} are always int.
+        tool_count = (tool_row[0] if tool_row else 0) or 0
+        error_count = (tool_row[1] if tool_row else 0) or 0
 
         sessions.append(
             SessionCost(
@@ -593,6 +620,7 @@ def session_costs(
                 cache_read_tokens=cr,
                 cache_creation_tokens=cc,
                 cache_hit_ratio=_cache_hit_ratio(cr, inp),
+                uncached_input_cost=_uncached_input_cost(r[_C["model"]] or "", inp),
                 duration_ms=r[_C["duration_ms"]] or 0,
                 turn_count=r[_C["turn_count"]] or 0,
                 tool_count=tool_count,
@@ -601,7 +629,10 @@ def session_costs(
         )
 
     if sort == "cache":
-        sessions.sort(key=lambda s: s.cache_hit_ratio)
+        # "Cache pain" sort: surface the sessions paying the most full-rate
+        # input first. cache_hit_ratio saturates at ~100% on healthy usage,
+        # so an asc-by-ratio sort buries the actionable rows in noise.
+        sessions.sort(key=lambda s: s.uncached_input_cost, reverse=True)
     elif sort == "time":
         sessions.sort(key=lambda s: s.timestamp, reverse=True)
     else:
@@ -646,12 +677,48 @@ def budget_status(
     )
 
 
+def has_tool_coverage(
+    conn: sqlite3.Connection, days: int | None, agent: str | None
+) -> bool:
+    """True if any trace in the window has trace_tools rows.
+
+    Caller-side use: the `error_storm` and `loop` anomaly classes are
+    no-ops when the window's traces all came from `openflux backfill`
+    (transcript-only path, no tool capture). The CLI / dashboard should
+    surface that explanation instead of silently emitting zero anomalies.
+    """
+    # Build the filter against `t` (the traces alias) explicitly so the
+    # window predicate doesn't collide with trace_tools' own timestamp col.
+    clauses: list[str] = ["1=1"]
+    params: list[Any] = []
+    if days is not None:
+        clauses.append("t.timestamp >= datetime('now', ? || ' days')")
+        params.append(f"-{days}")
+    if agent:
+        clauses.append("t.agent = ?")
+        params.append(agent)
+    where = " AND ".join(clauses)
+    row = conn.execute(
+        f"SELECT 1 FROM trace_tools tt "
+        f"JOIN traces t ON t.id = tt.trace_id "
+        f"WHERE {where} LIMIT 1",
+        params,
+    ).fetchone()
+    return row is not None
+
+
 def detect_anomalies(
     conn: sqlite3.Connection,
     days: int = 7,
     agent: str | None = None,
 ) -> list[CostAnomaly]:
-    """Detect cost anomalies: loops, cache misses, cost spikes, error storms."""
+    """Detect cost anomalies: loops, cache misses, cost spikes, error storms.
+
+    `loops` and `error_storms` require per-tool data in `trace_tools`;
+    they're silently skipped if the window has no tool coverage. Call
+    `has_tool_coverage(conn, days, agent)` first if the caller needs to
+    explain that to the user.
+    """
     where, params = _build_filter(days, agent)
     anomalies: list[CostAnomaly] = []
 
