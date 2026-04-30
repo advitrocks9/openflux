@@ -12,7 +12,7 @@ from openflux.sinks.base import Sink
 
 _DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 5  # outcomes table; v3 + v4 reserved for parallel WIP
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -117,6 +117,24 @@ CREATE INDEX IF NOT EXISTS idx_trace_context_trace ON trace_context(trace_id);
 CREATE INDEX IF NOT EXISTS idx_trace_searches_trace ON trace_searches(trace_id);
 CREATE INDEX IF NOT EXISTS idx_trace_sources_trace ON trace_sources(trace_id);
 CREATE INDEX IF NOT EXISTS idx_trace_tools_trace ON trace_tools(trace_id);
+
+CREATE TABLE IF NOT EXISTS outcomes (
+    session_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    start_sha TEXT,
+    end_sha TEXT,
+    lines_added INTEGER DEFAULT 0,
+    lines_removed INTEGER DEFAULT 0,
+    files_changed INTEGER DEFAULT 0,
+    tests_exit_code INTEGER,
+    tests_passed INTEGER,
+    pr_url TEXT,
+    pr_merged INTEGER,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcomes_captured ON outcomes(captured_at);
 """
 
 _TRACE_COLS = [
@@ -185,12 +203,42 @@ class SQLiteSink(Sink):
             self._conn.executescript(_SCHEMA_SQL)
         if current_version == 1:
             self._migrate_fts_v2()
+        if current_version < 5:
+            self._migrate_outcomes_v5()
 
         self._conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
             (_SCHEMA_VERSION,),
         )
         self._conn.commit()
+
+    def _migrate_outcomes_v5(self) -> None:
+        """Add outcomes table linking sessions to git diff + test results.
+
+        v3 and v4 are reserved for parallel cost-intelligence migrations
+        (dedup sessions, billable_messages). Idempotent: CREATE TABLE
+        IF NOT EXISTS, so safe to run regardless of which order this and
+        the cost-intelligence migrations land in.
+        """
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS outcomes (
+                session_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                start_sha TEXT,
+                end_sha TEXT,
+                lines_added INTEGER DEFAULT 0,
+                lines_removed INTEGER DEFAULT 0,
+                files_changed INTEGER DEFAULT 0,
+                tests_exit_code INTEGER,
+                tests_passed INTEGER,
+                pr_url TEXT,
+                pr_merged INTEGER,
+                captured_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, agent)
+            );
+            CREATE INDEX IF NOT EXISTS idx_outcomes_captured
+                ON outcomes(captured_at);
+        """)
 
     def _migrate_fts_v2(self) -> None:
         """Upgrade FTS index from v1 (4 fields) to v2 (8 fields)."""
@@ -514,6 +562,95 @@ class SQLiteSink(Sink):
             "output": row[2],
             "total": row[1] + row[2],
         }
+
+    def record_outcome(
+        self,
+        session_id: str,
+        agent: str,
+        captured_at: str,
+        start_sha: str | None = None,
+        end_sha: str | None = None,
+        lines_added: int = 0,
+        lines_removed: int = 0,
+        files_changed: int = 0,
+        tests_exit_code: int | None = None,
+        tests_passed: bool | None = None,
+        pr_url: str | None = None,
+        pr_merged: bool | None = None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO outcomes "
+            "(session_id, agent, start_sha, end_sha, lines_added, lines_removed, "
+            "files_changed, tests_exit_code, tests_passed, pr_url, pr_merged, "
+            "captured_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                session_id,
+                agent,
+                start_sha,
+                end_sha,
+                lines_added,
+                lines_removed,
+                files_changed,
+                tests_exit_code,
+                None if tests_passed is None else int(tests_passed),
+                pr_url,
+                None if pr_merged is None else int(pr_merged),
+                captured_at,
+            ),
+        )
+        self._conn.commit()
+
+    def get_outcome(self, session_id: str, agent: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT session_id, agent, start_sha, end_sha, lines_added, "
+            "lines_removed, files_changed, tests_exit_code, tests_passed, "
+            "pr_url, pr_merged, captured_at "
+            "FROM outcomes WHERE session_id = ? AND agent = ?",
+            (session_id, agent),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "session_id": row[0],
+            "agent": row[1],
+            "start_sha": row[2],
+            "end_sha": row[3],
+            "lines_added": row[4],
+            "lines_removed": row[5],
+            "files_changed": row[6],
+            "tests_exit_code": row[7],
+            "tests_passed": None if row[8] is None else bool(row[8]),
+            "pr_url": row[9],
+            "pr_merged": None if row[10] is None else bool(row[10]),
+            "captured_at": row[11],
+        }
+
+    def list_outcomes(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT session_id, agent, start_sha, end_sha, lines_added, "
+            "lines_removed, files_changed, tests_exit_code, tests_passed, "
+            "pr_url, pr_merged, captured_at "
+            "FROM outcomes ORDER BY captured_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "session_id": r[0],
+                "agent": r[1],
+                "start_sha": r[2],
+                "end_sha": r[3],
+                "lines_added": r[4],
+                "lines_removed": r[5],
+                "files_changed": r[6],
+                "tests_exit_code": r[7],
+                "tests_passed": None if r[8] is None else bool(r[8]),
+                "pr_url": r[9],
+                "pr_merged": None if r[10] is None else bool(r[10]),
+                "captured_at": r[11],
+            }
+            for r in rows
+        ]
 
     def export_json(self) -> list[Trace]:
         rows = self._conn.execute("SELECT * FROM traces ORDER BY timestamp").fetchall()
