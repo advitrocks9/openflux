@@ -12,7 +12,7 @@ from openflux.sinks.base import Sink
 
 _DEFAULT_DB_PATH = Path.home() / ".openflux" / "traces.db"
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 5  # outcomes table; v3 + v4 reserved for parallel WIP
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -203,8 +203,8 @@ class SQLiteSink(Sink):
             self._conn.executescript(_SCHEMA_SQL)
         if current_version == 1:
             self._migrate_fts_v2()
-        if current_version < 3:
-            self._migrate_outcomes_v3()
+        if current_version < 5:
+            self._migrate_outcomes_v5()
 
         self._conn.execute(
             "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
@@ -212,8 +212,14 @@ class SQLiteSink(Sink):
         )
         self._conn.commit()
 
-    def _migrate_outcomes_v3(self) -> None:
-        """Add outcomes table linking sessions to git diff + test results."""
+    def _migrate_outcomes_v5(self) -> None:
+        """Add outcomes table linking sessions to git diff + test results.
+
+        v3 and v4 are reserved for parallel cost-intelligence migrations
+        (dedup sessions, billable_messages). Idempotent: CREATE TABLE
+        IF NOT EXISTS, so safe to run regardless of which order this and
+        the cost-intelligence migrations land in.
+        """
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS outcomes (
                 session_id TEXT NOT NULL,
