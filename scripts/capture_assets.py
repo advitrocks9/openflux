@@ -43,7 +43,6 @@ TABS: list[tuple[str, str]] = [
     ("sessions", "#sessions"),
     ("traces", "#traces"),
     ("stats", "#stats"),
-    ("insights", "#insights"),
 ]
 
 

@@ -32,9 +32,7 @@ The **Sessions** tab links every session to its git diff and test result:
 | 2026-04-29 12:08 | broke tests | $11.40 | +89 / -12 | 4 | ✗ fail | 8b4d9f0 → c1e2a3f | add user roles |
 | 2026-04-29 10:55 | no diff | $2.06 | 0 / 0 | 0 | — | 71d5fa8 → 71d5fa8 | debug login flow |
 
-The **Insights** tab gives you the cost side: cache hit ratio, daily burn rate, projected monthly, anomaly detection per session.
-
-Together they answer the only question that matters: *was that session worth it?*
+Cost is computed server-side from per-model rates (Sonnet/Opus/Haiku/GPT-4o/Gemini). Set `OPENFLUX_TEST_CMD="pytest -q"` to populate the tests column.
 
 ## How it works
 
@@ -58,12 +56,13 @@ Zero dependencies beyond Python stdlib for the core. Each framework adapter adds
 
 OpenFlux ships with a built-in web dashboard. Run `openflux serve` and open your browser.
 
-The dashboard has four tabs:
+The dashboard has three tabs:
 
 - **Sessions** — outcomes view (the headline). Cost, lines added, lines removed, files, tests passed, diff range, original task. Built for the question *"did this session ship working code?"*
-- **Insights** — cost intelligence. Daily burn, projected monthly, cache hit ratio, anomaly detection per session.
 - **Traces** — the raw trace explorer with sortable columns, full-text search, agent filtering.
 - **Stats** — token usage over time, traces per day, aggregate metrics.
+
+A fourth Insights tab (cost anomalies, cache-hit ratio, daily burn) is on the roadmap.
 
 <p align="center">
   <img src="assets/screenshots/traces-dark.png" width="100%" alt="Trace Explorer">
