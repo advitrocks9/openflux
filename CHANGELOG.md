@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0 (2026-04-30)
+
+### Added
+- Cost forensics module (`openflux.insights`) covering cache hit ratio, cost-without-cache, daily burn rate, monthly projection, and per-model + per-day breakdowns.
+- `openflux cost` CLI: total spend, cache discipline, savings vs no-cache, burn rate, model and day breakdowns.
+- `openflux sessions` CLI: per-session cost, sortable by cost / cache / time.
+- `openflux anomalies` CLI: detects cost spikes, cache misses, error storms, and agent loops; sorted by cost impact.
+- `openflux budget set <amount>` / `openflux budget check`: daily budget cap with end-of-day spend projection.
+- `openflux backfill`: import historical Claude Code transcripts from `~/.claude/projects/` into the local database. Idempotent; `--refresh` flag to re-parse already-imported sessions.
+- Three new dashboard endpoints: `/api/insights`, `/api/insights/sessions`, `/api/insights/anomalies`.
+- Waste tab in the dashboard: visual breakdown of the same metrics surfaced in the CLI.
+- `billable_messages` table (schema v4): per-Anthropic-message-id billing record so the same API call across resumed or forked transcripts is counted once.
+- `openflux._pricing`: centralized per-model token pricing helper, used by both the cost CLI and the insights module.
+
+### Changed
+- README rebranded around the cost-forensics question ("Find out where your Claude Code budget actually went this week"); Sessions tab demoted to a secondary feature; placeholder example data removed.
+- For Claude Code, cost is computed from `billable_messages` when available (deduplicated by message.id) and falls back to per-trace token aggregates for adapters that do not expose message ids. Mutually exclusive, so no double-counting.
+- `_SCHEMA_VERSION` bumped to 5; three new migrations (`v3` dedup_sessions, `v4` billable_messages, `v5` outcomes) all idempotent.
+
+### Bug fixes
+- `tests/unit/test_sqlite_sink.py::test_most_accessed_first`: anchored to `datetime.now(UTC)` so the days-window filter does not drop test rows as the calendar advances past a hardcoded date.
+
 ## 0.4.0 (2026-04-30)
 
 ### Added
