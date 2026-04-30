@@ -404,14 +404,28 @@ def _print_cost_overview(overview: object, days: int) -> None:
     print(f"  Burn rate:        ${o.daily_burn_rate:,.2f}/day")
     print(f"  Projected month:  ${o.projected_monthly:,.2f}")
 
-    # Cache efficiency: the #1 actionable metric
+    # Lead with the dollar savings: this is the actionable number.
+    # The cache hit ratio saturates near 100% on real Claude usage (cache_read
+    # tokens dwarf fresh input by orders of magnitude), so a high ratio is
+    # status-quo and only a low ratio is news.
     print()
     if o.total_cache_read_tokens > 0 or o.total_cache_creation_tokens > 0:
-        print(f"  Cache hit ratio:  {o.cache_hit_ratio:.0%}")
-        print(f"  Cache savings:    ${o.cache_savings:,.2f}")
         if o.cost_without_cache > 0:
             pct_saved = o.cache_savings / o.cost_without_cache * 100
-            print(f"  You saved {pct_saved:.0f}% vs no caching")
+            print(
+                f"  Cache savings:    ${o.cache_savings:,.2f}"
+                f"  ({pct_saved:.0f}% of pre-cache cost)"
+            )
+        else:
+            print(f"  Cache savings:    ${o.cache_savings:,.2f}")
+        ratio_pct = o.cache_hit_ratio * 100
+        if ratio_pct >= 95:
+            note = "input served from cache"
+        elif ratio_pct >= 70:
+            note = "below typical (95%+); some sessions paying full input price"
+        else:
+            note = "cache discipline broken; most input is at full rate"
+        print(f"  Cache hit ratio:  {ratio_pct:.0f}% ({note})")
     else:
         print("  Cache:            No cache data (check adapter config)")
 
@@ -815,7 +829,7 @@ def cmd_sessions(args: argparse.Namespace) -> None:
 
     sort_label = {
         "cost": "most expensive",
-        "cache": "worst cache",
+        "cache": "highest uncached input cost",
         "time": "most recent",
     }
     print(f"Sessions: {sort_label.get(args.sort, args.sort)} first")
@@ -826,9 +840,11 @@ def cmd_sessions(args: argparse.Namespace) -> None:
         cache_str = f"{s.cache_hit_ratio:.0%}" if s.cache_read_tokens else "  -"
         dur = _fmt_duration(s.duration_ms)
         task = _truncate(s.task, 40)
+        # `uncached$` is what they paid full input rate on. The actionable
+        # number; cache_hit_ratio sits next to it as context.
         print(
-            f"  {mark} ${s.cost:>6.2f}  cache:{cache_str:>4s}"
-            f"  {s.tool_count:>3} tools  {dur:>5s}  {s.trace_id}  {task}"
+            f"  {mark} ${s.cost:>6.2f}  uncached:${s.uncached_input_cost:>6.2f}"
+            f"  cache:{cache_str:>4s}  {dur:>5s}  {s.trace_id}  {task}"
         )
 
     total_cost = sum(s.cost for s in sessions)
@@ -936,22 +952,35 @@ def _print_budget(b: object) -> None:
 
 
 def cmd_anomalies(args: argparse.Namespace) -> None:
-    from openflux.insights import detect_anomalies
+    from openflux.insights import detect_anomalies, has_tool_coverage
 
     sink = _get_sink()
     try:
         anomalies = detect_anomalies(
             sink.conn, days=args.days, agent=args.agent or None
         )
+        tool_coverage = has_tool_coverage(
+            sink.conn, days=args.days, agent=args.agent or None
+        )
     finally:
         sink.close()
 
-    if not anomalies:
-        print(f"No anomalies detected in the last {args.days} days.")
-        return
-
     print(f"Cost anomalies: last {args.days} days")
     print("\u2550" * 65)
+
+    if not tool_coverage:
+        # error_storm and loop classes need per-tool data which only the
+        # live PostToolUse hook captures. Backfilled-only databases will
+        # never see them; say so plainly instead of silently emitting 0.
+        print()
+        print("  Note: trace_tools is empty for this window, so error-storm")
+        print("  and loop detection are skipped. They need live hook capture")
+        print("  (`openflux install claude-code`); transcript-only backfill")
+        print("  doesn't record per-tool data.")
+
+    if not anomalies:
+        print(f"\nNo anomalies detected in the last {args.days} days.")
+        return
 
     # Group by type
     by_type: dict[str, list[Any]] = {}

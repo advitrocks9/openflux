@@ -250,11 +250,13 @@ class TestSessionCosts:
         assert costs == sorted(costs, reverse=True)
 
     def test_sorted_by_cache(self, cost_db: str) -> None:
+        # `sort="cache"` is now "cache pain": uncached_input_cost desc.
+        # Sessions paying full input price surface to the top.
         conn = sqlite3.connect(cost_db)
         sessions = session_costs(conn, days=30, sort="cache")
         conn.close()
-        ratios = [s.cache_hit_ratio for s in sessions]
-        assert ratios == sorted(ratios)
+        costs = [s.uncached_input_cost for s in sessions]
+        assert costs == sorted(costs, reverse=True)
 
     def test_per_session_cache_ratio(self, cost_db: str) -> None:
         conn = sqlite3.connect(cost_db)

@@ -45,6 +45,56 @@ CORRECTION_PATTERN = re.compile(
     r"I\s+(said|meant|want))",
 )
 
+# Claude Code wraps slash-command invocations and various system events in
+# pseudo-XML tags inside the "user" message content. The first user message of
+# a session is often pure tag noise (a /-command invocation, a session-resume
+# system reminder, etc) with the real prompt only appearing on a later turn.
+# Stripping is whitelisted to known wrapper tag names so legitimate prompts
+# containing angle brackets (e.g. "Fix <select> handling") survive intact.
+_KNOWN_WRAPPER_TAGS = (
+    "local-command-caveat",
+    "local-command-stdout",
+    "local-command-stderr",
+    "command-name",
+    "command-message",
+    "command-args",
+    "system-reminder",
+)
+_KNOWN_TAG_RE = re.compile(
+    r"<(?:" + "|".join(_KNOWN_WRAPPER_TAGS) + r")\b[^>]*>"
+    r".*?"
+    r"</(?:" + "|".join(_KNOWN_WRAPPER_TAGS) + r")>",
+    re.DOTALL,
+)
+_COMMAND_NAME_RE = re.compile(r"<command-name>([^<]+)</command-name>")
+
+
+def _clean_task_text(text: str) -> str:
+    """Strip Claude Code system wrapper tags from a user-message body.
+
+    Returns "" if nothing substantive remains after stripping (the caller
+    should then try the next user message). Only known wrapper tag names
+    are removed; unknown angle brackets pass through so prompts like
+    `Fix <select> handling` aren't corrupted.
+    """
+    if not text:
+        return ""
+    cleaned = _KNOWN_TAG_RE.sub("", text).strip()
+    return cleaned
+
+
+def _slash_command_name(text: str) -> str:
+    """Extract the slash-command name from a `<command-name>` tag if present.
+
+    Used as a last-resort fallback when no later user message carries
+    substantive prompt text. Returns "" if no command tag is found.
+    """
+    cmd = _COMMAND_NAME_RE.search(text or "")
+    if not cmd:
+        return ""
+    return cmd.group(1).strip().lstrip("/")
+
+
 _OPENFLUX_DIR = Path.home() / ".openflux"
 
 _FILE_CONTENT_MAX = 4096
@@ -807,6 +857,8 @@ def _parse_transcript(path: Path) -> TranscriptData:
     correction_count = 0
     git_branch: str = ""
     project_name: str = ""
+    # Last-resort task fallback if every user message is pure tag noise.
+    slash_fallback: str = ""
     # Multi-tool API responses get one transcript entry per tool_use
     # block; long responses also stream intermediate snapshots. All
     # copies share the message.id but `output_tokens` grows as the model
@@ -847,9 +899,17 @@ def _parse_transcript(path: Path) -> TranscriptData:
             if entry_type == "user":
                 data.turn_count += 1
                 text = _extract_user_text(msg)
-                # First user message → task
-                if not data.task and text:
-                    data.task = truncate_content(text, _TASK_MAX)
+                # First substantive user message → task. System tag soup
+                # (slash-command boilerplate, session-resume reminders) is
+                # stripped first; if nothing real is left, try the next turn.
+                # Slash-command name is captured as a fallback in case no
+                # turn ever has substantive text.
+                if not data.task:
+                    cleaned = _clean_task_text(text)
+                    if cleaned:
+                        data.task = truncate_content(cleaned, _TASK_MAX)
+                    elif not slash_fallback:
+                        slash_fallback = _slash_command_name(text)
                 # Check for corrections in all user messages
                 if text and CORRECTION_PATTERN.search(text):
                     correction_count += 1
@@ -951,6 +1011,13 @@ def _parse_transcript(path: Path) -> TranscriptData:
     if correction_count > 0:
         snippet = truncate_content(last_correction_text, _CORRECTION_TEXT_MAX)
         data.correction = f"Detected {correction_count} correction(s). Last: {snippet}"
+
+    # Last-resort task fallback. If every user message in the session was
+    # pure system-tag noise (slash command boilerplate, session-resume
+    # reminders), fall back to the slash command name so the row still has
+    # something more useful than an empty task.
+    if not data.task and slash_fallback:
+        data.task = slash_fallback
 
     return data
 
