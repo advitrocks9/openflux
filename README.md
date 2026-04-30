@@ -66,6 +66,12 @@ The dashboard has four tabs:
 - **Stats** — token usage over time, traces per day, aggregate metrics.
 
 <p align="center">
+  <img src="assets/screenshots/sessions-dark.png" width="100%" alt="Sessions: did this session ship working code?">
+</p>
+
+**Sessions tab** — every Claude Code session, ranked by recency. The `OUTCOME` column says `SHIPPED` or `BROKE TESTS` based on the test command result; `COST` is computed from per-model rates; `LINES` is the git diff against the start sha; `DIFF` shows `start_sha → end_sha`. Set `OPENFLUX_TEST_CMD="pytest -q"` (or your own) to populate the tests column.
+
+<p align="center">
   <img src="assets/screenshots/traces-dark.png" width="100%" alt="Trace Explorer">
 </p>
 
