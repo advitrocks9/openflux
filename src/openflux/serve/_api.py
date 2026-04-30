@@ -15,9 +15,7 @@ from openflux.sinks.sqlite import SQLiteSink
 # parallel cost-intelligence WIP introduces openflux._pricing). When
 # branches merge, this conditional collapses to the import path.
 try:
-    from openflux._pricing import (
-        estimate_cost as _estimate_cost,  # pyright: ignore[reportMissingImports, reportUnknownVariableType]
-    )
+    from openflux._pricing import estimate_cost as _estimate_cost  # type: ignore[import-not-found,no-redef]  # noqa: I001  # pyright: ignore[reportMissingImports, reportUnknownVariableType]
 except ImportError:
     _FALLBACK_RATES: list[tuple[str, float, float]] = [
         ("opus", 15.00, 75.00),
