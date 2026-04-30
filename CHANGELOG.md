@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 (2026-04-30)
+
+### Added
+- Outcome capture: every Claude Code session is linked to its git diff (start_sha → end_sha, lines added/removed, files changed) and test result (exit code from `OPENFLUX_TEST_CMD`).
+- Sessions tab in the dashboard (the new headline view): cost, lines, files, tests passed, diff range, original task.
+- `openflux outcomes` CLI: terminal view of session outcomes.
+- `/api/outcomes` endpoints: list and detail.
+- Per-model cost rates for Sonnet, Opus, Haiku, GPT-4o, Gemini, computed server-side and exposed in the Sessions tab.
+- `scripts/seed_demo_data.py`: deterministic demo database for screenshots and screencasts (no private `~/.openflux/traces.db` required).
+
+### Changed
+- README rebranded around outcome-linked observability ("did this session ship working code?"), Sessions tab as the hero screenshot.
+- `outcomes` table added to SQLite schema (joined to traces by `session_id`); existing databases auto-migrate on first read.
+
 ## 0.3.0 (2026-04-11)
 
 ### Breaking
