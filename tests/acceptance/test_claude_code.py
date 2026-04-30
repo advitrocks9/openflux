@@ -837,3 +837,211 @@ class TestTaskCleanup:
 
         td = _parse_transcript(transcript)
         assert td.task == "build"
+
+
+class TestTranscriptToolExtraction:
+    """`_parse_transcript` walks tool_use/tool_result content blocks to
+    rebuild per-tool detail. Without this, the loop and error_storm
+    anomaly classes silently no-op for backfill-only databases."""
+
+    def _build(self, path: Path, blocks: list[dict]) -> None:
+        """Write a minimal valid transcript with the given content blocks
+        in one assistant + one follow-up user message."""
+        ts = "2026-04-30T10:00:00.000Z"
+        # Split blocks into tool_use (assistant-side) and tool_result (user-side).
+        tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+        tool_results = [b for b in blocks if b.get("type") == "tool_result"]
+        lines = [
+            # Initial user prompt so task extraction picks up something real
+            {
+                "type": "user",
+                "timestamp": ts,
+                "message": {"content": "Run the tools"},
+            },
+            # Assistant message containing the tool_use blocks
+            {
+                "type": "assistant",
+                "timestamp": ts,
+                "message": {
+                    "id": "msg-asst-1",
+                    "model": "claude-sonnet-4-6",
+                    "content": tool_uses + [{"type": "text", "text": "ok"}],
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            },
+            # Follow-up user message containing the tool_result blocks
+            {
+                "type": "user",
+                "timestamp": ts,
+                "message": {"content": tool_results},
+            },
+        ]
+        with path.open("w") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+    def test_bash_tool_extracted(self, tmp_path):
+        transcript = tmp_path / "bash.jsonl"
+        self._build(
+            transcript,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "Bash",
+                    "input": {"command": "pytest -q"},
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "5 passed in 0.12s",
+                },
+            ],
+        )
+        td = _parse_transcript(transcript)
+        assert len(td.tools_used) == 1
+        assert td.tools_used[0].name == "Bash"
+        assert "pytest" in td.tools_used[0].tool_input
+        assert "5 passed" in td.tools_used[0].tool_output
+        assert td.tools_used[0].error is False
+
+    def test_edit_classified_as_source_and_files_modified(self, tmp_path):
+        transcript = tmp_path / "edit.jsonl"
+        self._build(
+            transcript,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "Edit",
+                    "input": {
+                        "file_path": "/Users/dev/proj/auth.py",
+                        "old_string": "x",
+                        "new_string": "y",
+                    },
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_2",
+                    "content": "File edited",
+                },
+            ],
+        )
+        td = _parse_transcript(transcript)
+        assert "/Users/dev/proj/auth.py" in td.files_modified
+        assert any(s.path == "/Users/dev/proj/auth.py" for s in td.sources_read)
+
+    def test_websearch_classified_as_search(self, tmp_path):
+        transcript = tmp_path / "search.jsonl"
+        self._build(
+            transcript,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_3",
+                    "name": "WebSearch",
+                    "input": {"query": "python oauth pkce"},
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_3",
+                    "content": "Result A\nResult B",
+                },
+            ],
+        )
+        td = _parse_transcript(transcript)
+        assert any("oauth pkce" in s.query for s in td.searches)
+
+    def test_error_flag_propagated_from_is_error(self, tmp_path):
+        transcript = tmp_path / "error.jsonl"
+        self._build(
+            transcript,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_4",
+                    "name": "Bash",
+                    "input": {"command": "false"},
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_4",
+                    "content": "exit 1",
+                    "is_error": True,
+                },
+            ],
+        )
+        td = _parse_transcript(transcript)
+        assert len(td.tools_used) == 1
+        assert td.tools_used[0].error is True
+
+    def test_orphan_tool_use_without_result_skipped(self, tmp_path):
+        """An assistant message can end with a tool_use that never gets a
+        result (session interrupted). Don't emit an incomplete record."""
+        transcript = tmp_path / "orphan.jsonl"
+        self._build(
+            transcript,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_5",
+                    "name": "Bash",
+                    "input": {"command": "echo hi"},
+                },
+                # no matching tool_result
+            ],
+        )
+        td = _parse_transcript(transcript)
+        assert len(td.tools_used) == 0
+        assert len(td.sources_read) == 0
+        assert len(td.files_modified) == 0
+
+    def test_tool_result_without_use_silently_dropped(self, tmp_path):
+        """Defensive: a stray tool_result with no matching tool_use id
+        should not raise and should not produce a record."""
+        transcript = tmp_path / "stray.jsonl"
+        self._build(
+            transcript,
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_unknown",
+                    "content": "stray output",
+                },
+            ],
+        )
+        td = _parse_transcript(transcript)
+        assert len(td.tools_used) == 0
+
+    def test_content_string_form_handled(self, tmp_path):
+        """tool_result.content can be either a string or a list of inner
+        content blocks. Both forms exist in real transcripts."""
+        transcript = tmp_path / "content-blocks.jsonl"
+        self._build(
+            transcript,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_6",
+                    "name": "Bash",
+                    "input": {"command": "echo hi"},
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_6",
+                    "content": [
+                        {"type": "text", "text": "hi"},
+                        {"type": "text", "text": "from-blocks"},
+                    ],
+                },
+            ],
+        )
+        td = _parse_transcript(transcript)
+        assert len(td.tools_used) == 1
+        assert "hi" in td.tools_used[0].tool_output
+        assert "from-blocks" in td.tools_used[0].tool_output

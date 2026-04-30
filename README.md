@@ -50,14 +50,17 @@ openflux budget set 10 # daily cap, $/day; check with `openflux budget check`
 
 The **Waste** tab in the dashboard answers the questions ccusage and CodeBurn don't:
 
-- **Cache discipline.** Cache hit ratio per session and per model. The dashboard shows what you would have paid without caching so you can see the savings (or the lack of them) in dollars.
-- **Burn rate.** Daily spend over a window, projected to month-end at the current rate.
-- **Per-session cost.** Sortable by cost, by cache hit ratio, or by time. Useful for finding the one session that cost more than the other ten put together.
+- **Cache savings.** Total dollars saved by Anthropic's prompt caching versus what you'd have paid at full input rate. The headline number; on healthy usage this is tens or hundreds of dollars. (Cache hit ratio is shown alongside but stays near 100% on healthy traffic so it's mostly informational; the dollar amount is what to act on.)
+- **Uncached input cost per session.** Dollars paid at full input rate, surfaced both in the dashboard and via `openflux sessions --sort cache`. The actionable "cache pain" metric: sessions paying real money on un-cached prefixes float to the top instead of getting buried by the saturated ratio.
+- **Burn rate.** Daily spend over the window, projected to month-end at the current rate.
+- **Per-session cost.** Sortable by cost, by cache pain, or by time. Useful for finding the one session that cost more than the other ten put together.
 - **Anomaly detection.** Four classes, each tied to a real failure mode:
-  - **Cost spikes** — sessions that cost 3x+ the rolling average.
-  - **Cache misses** — sessions with significant input tokens and zero cache hits, where a prefix invalidation made you re-pay for tokens you should have hit the cache on.
-  - **Error storms** — sessions where 50%+ of tool calls failed, so most of the spend was wasted retry traffic.
-  - **Agent loops** — same tool called 4+ times consecutively with identical input. A heuristic for "stuck."
+  - **Cost spikes** — sessions costing 3x+ the rolling average.
+  - **Cache misses** — sessions with significant input tokens and 0% cache hits.
+  - **Error storms** — 50%+ of tool calls failed in a session.
+  - **Agent loops** — same tool called 4+ times consecutively with identical input.
+
+  All four classes work for both live `openflux install claude-code` capture and `openflux backfill` databases (per-tool detail is reconstructed from the transcript's `tool_use` / `tool_result` blocks).
 - **Budget cap.** Set a daily ceiling with `openflux budget set <amount>`. `openflux budget check` shows spent, remaining, percent used, and projected end-of-day spend at the current pace.
 
 The same data is exposed at `/api/insights`, `/api/insights/sessions`, and `/api/insights/anomalies` if you want to hook a notifier or alert into it.
