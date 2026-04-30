@@ -95,6 +95,99 @@ def _slash_command_name(text: str) -> str:
     return cmd.group(1).strip().lstrip("/")
 
 
+def _extract_tool_result_text(block: dict[str, Any]) -> str:
+    """Pull the text payload out of a tool_result content block.
+
+    The Anthropic content-block schema lets `content` be either a string
+    or a list of inner content blocks. Both forms appear in real Claude
+    Code transcripts, so handle both.
+    """
+    inner: Any = block.get("content", "")
+    if isinstance(inner, str):
+        return inner
+    if isinstance(inner, list):
+        sub_blocks = cast(list[dict[str, Any]], inner)
+        parts: list[str] = []
+        for sub in sub_blocks:
+            if sub.get("type") == "text":
+                parts.append(str(sub.get("text", "")))
+        return "\n".join(parts)
+    return ""
+
+
+def _register_tool_uses(
+    msg: dict[str, Any],
+    pending: dict[str, dict[str, Any]],
+    timestamp: str,
+) -> None:
+    """Index every tool_use block in this assistant message by its id."""
+    raw_content: Any = msg.get("content", [])
+    if not isinstance(raw_content, list):
+        return
+    blocks = cast(list[dict[str, Any]], raw_content)
+    for block in blocks:
+        if block.get("type") != "tool_use":
+            continue
+        tool_id = str(block.get("id", ""))
+        if not tool_id:
+            continue
+        raw_input: Any = block.get("input", {})
+        tool_input: dict[str, Any] = (
+            cast(dict[str, Any], raw_input) if isinstance(raw_input, dict) else {}
+        )
+        pending[tool_id] = {
+            "name": str(block.get("name", "")),
+            "input": tool_input,
+            "ts": timestamp,
+        }
+
+
+def _harvest_tool_results(
+    msg: dict[str, Any],
+    pending: dict[str, dict[str, Any]],
+    timestamp: str,
+    fidelity: FidelityMode,
+    exclude_patterns: list[str],
+    data: TranscriptData,
+) -> None:
+    """Match tool_result blocks to pending tool_use ids and classify each.
+
+    Reuses `_classify_tool` so backfilled traces carry the same shape of
+    per-tool detail as live PostToolUse-hook traces.
+    """
+    raw_content: Any = msg.get("content", [])
+    if not isinstance(raw_content, list):
+        return
+    blocks = cast(list[dict[str, Any]], raw_content)
+    for block in blocks:
+        if block.get("type") != "tool_result":
+            continue
+        tool_use_id = str(block.get("tool_use_id", ""))
+        invocation = pending.pop(tool_use_id, None)
+        if invocation is None:
+            continue
+        tool_output = _extract_tool_result_text(block)
+        error = bool(block.get("is_error"))
+        classified = _classify_tool(
+            tool_name=cast(str, invocation["name"]),
+            tool_input=cast(dict[str, Any], invocation["input"]),
+            tool_output=tool_output,
+            error=error,
+            timestamp=cast(str, invocation["ts"]) or timestamp,
+            fidelity=fidelity,
+            exclude_patterns=exclude_patterns,
+        )
+        for s in classified.get("searches", []):
+            data.searches.append(SearchRecord(**s))
+        for src in classified.get("sources", []):
+            data.sources_read.append(SourceRecord(**src))
+        for t in classified.get("tools", []):
+            data.tools_used.append(ToolRecord(**t))
+        for f in classified.get("files_modified", []):
+            if f and f not in data.files_modified:
+                data.files_modified.append(f)
+
+
 _OPENFLUX_DIR = Path.home() / ".openflux"
 
 _FILE_CONTENT_MAX = 4096
@@ -119,6 +212,17 @@ class TranscriptData:
     scope: str | None = None
     correction: str | None = None
     context: list[ContextRecord] = field(default_factory=lambda: list[ContextRecord]())
+    # Reconstructed per-tool detail. Live `PostToolUse` hooks populate
+    # these directly via `_classify_tool`. Backfill from a JSONL transcript
+    # used to leave them empty (the fallback path lacked tool extraction),
+    # which silently disabled the loop and error_storm anomaly classes.
+    # Now populated by walking tool_use/tool_result content blocks.
+    tools_used: list[ToolRecord] = field(default_factory=lambda: list[ToolRecord]())
+    searches: list[SearchRecord] = field(default_factory=lambda: list[SearchRecord]())
+    sources_read: list[SourceRecord] = field(
+        default_factory=lambda: list[SourceRecord]()
+    )
+    files_modified: list[str] = field(default_factory=lambda: list[str]())
     # Map of Anthropic message_id → per-message billing record. Used to
     # populate `billable_messages` so the same API call across resumed/forked
     # session transcripts is billed exactly once (PK on message_id dedupes).
@@ -771,6 +875,19 @@ def _apply_transcript_data(
         trace.scope = td.scope
     if td.context:
         trace.context.extend(td.context)
+    # Per-tool detail reconstructed from tool_use/tool_result blocks. Only
+    # extend with what the transcript provided so we don't double-count
+    # records the live hook path may have already attached.
+    if td.tools_used and not trace.tools_used:
+        trace.tools_used.extend(td.tools_used)
+    if td.searches and not trace.searches:
+        trace.searches.extend(td.searches)
+    if td.sources_read and not trace.sources_read:
+        trace.sources_read.extend(td.sources_read)
+    if td.files_modified and not trace.files_modified:
+        for f in td.files_modified:
+            if f not in trace.files_modified:
+                trace.files_modified.append(f)
     # Prefer transcript turn_count (user entries), fall back to tool events
     trace.turn_count = td.turn_count if td.turn_count > 0 else tool_event_count
     if td.duration_ms > 0:
@@ -870,6 +987,15 @@ def _parse_transcript(path: Path) -> TranscriptData:
     # Track usage from messages without an id, accumulated as-is.
     anonymous_totals = TokenUsage()
 
+    # Tool-use registry: id -> {name, input, ts}. Populated when an
+    # assistant message contains a tool_use block; consumed when a
+    # subsequent user message carries the matching tool_result block.
+    # Without this, backfill never builds ToolRecord/SourceRecord/etc.
+    # and the loop / error_storm anomaly classes can't fire.
+    pending_tools: dict[str, dict[str, Any]] = {}
+    fidelity = _get_fidelity()
+    exclude_patterns = get_exclude_patterns()
+
     with path.open("r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
@@ -898,6 +1024,12 @@ def _parse_transcript(path: Path) -> TranscriptData:
 
             if entry_type == "user":
                 data.turn_count += 1
+                # Match any tool_result blocks against pending tool_use ids
+                # and run them through the same classifier the live hook
+                # path uses, so backfilled traces carry per-tool detail.
+                _harvest_tool_results(
+                    msg, pending_tools, ts, fidelity, exclude_patterns, data
+                )
                 text = _extract_user_text(msg)
                 # First substantive user message → task. System tag soup
                 # (slash-command boilerplate, session-resume reminders) is
@@ -957,6 +1089,9 @@ def _parse_transcript(path: Path) -> TranscriptData:
                 if text:
                     # Keep updating - we want the last one
                     data.decision = truncate_content(text, _DECISION_MAX)
+                # Register any tool_use blocks; the matching tool_result
+                # comes in the next user message and is processed there.
+                _register_tool_uses(msg, pending_tools, ts)
 
             # System messages carry context (system prompts, reminders)
             if entry_type == "system" or msg.get("role") == "system":
