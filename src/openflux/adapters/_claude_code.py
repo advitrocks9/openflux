@@ -106,9 +106,10 @@ def _extract_tool_result_text(block: dict[str, Any]) -> str:
     if isinstance(inner, str):
         return inner
     if isinstance(inner, list):
+        sub_blocks = cast(list[dict[str, Any]], inner)
         parts: list[str] = []
-        for sub in inner:
-            if isinstance(sub, dict) and sub.get("type") == "text":
+        for sub in sub_blocks:
+            if sub.get("type") == "text":
                 parts.append(str(sub.get("text", "")))
         return "\n".join(parts)
     return ""
@@ -120,18 +121,20 @@ def _register_tool_uses(
     timestamp: str,
 ) -> None:
     """Index every tool_use block in this assistant message by its id."""
-    content: Any = msg.get("content", [])
-    if not isinstance(content, list):
+    raw_content: Any = msg.get("content", [])
+    if not isinstance(raw_content, list):
         return
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
+    blocks = cast(list[dict[str, Any]], raw_content)
+    for block in blocks:
+        if block.get("type") != "tool_use":
             continue
         tool_id = str(block.get("id", ""))
         if not tool_id:
             continue
-        tool_input = block.get("input", {})
-        if not isinstance(tool_input, dict):
-            tool_input = {}
+        raw_input: Any = block.get("input", {})
+        tool_input: dict[str, Any] = (
+            cast(dict[str, Any], raw_input) if isinstance(raw_input, dict) else {}
+        )
         pending[tool_id] = {
             "name": str(block.get("name", "")),
             "input": tool_input,
@@ -152,11 +155,12 @@ def _harvest_tool_results(
     Reuses `_classify_tool` so backfilled traces carry the same shape of
     per-tool detail as live PostToolUse-hook traces.
     """
-    content: Any = msg.get("content", [])
-    if not isinstance(content, list):
+    raw_content: Any = msg.get("content", [])
+    if not isinstance(raw_content, list):
         return
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
+    blocks = cast(list[dict[str, Any]], raw_content)
+    for block in blocks:
+        if block.get("type") != "tool_result":
             continue
         tool_use_id = str(block.get("tool_use_id", ""))
         invocation = pending.pop(tool_use_id, None)
@@ -165,18 +169,18 @@ def _harvest_tool_results(
         tool_output = _extract_tool_result_text(block)
         error = bool(block.get("is_error"))
         classified = _classify_tool(
-            tool_name=invocation["name"],
-            tool_input=invocation["input"],
+            tool_name=cast(str, invocation["name"]),
+            tool_input=cast(dict[str, Any], invocation["input"]),
             tool_output=tool_output,
             error=error,
-            timestamp=invocation["ts"] or timestamp,
+            timestamp=cast(str, invocation["ts"]) or timestamp,
             fidelity=fidelity,
             exclude_patterns=exclude_patterns,
         )
         for s in classified.get("searches", []):
             data.searches.append(SearchRecord(**s))
-        for s in classified.get("sources", []):
-            data.sources_read.append(SourceRecord(**s))
+        for src in classified.get("sources", []):
+            data.sources_read.append(SourceRecord(**src))
         for t in classified.get("tools", []):
             data.tools_used.append(ToolRecord(**t))
         for f in classified.get("files_modified", []):
